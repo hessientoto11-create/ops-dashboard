@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import datetime
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -34,20 +35,15 @@ def load_and_build():
     logs['User Name']  = logs['User Name'].str.strip()
     tasks['User Name'] = tasks['User Name'].str.strip()
 
-    # All timestamps are already local time
     logs['ts'] = pd.to_datetime(logs['Date (Local)'], errors='coerce')
 
     tasks['created_ts']  = pd.to_datetime(tasks['Created At'],  errors='coerce')
     tasks['resolved_ts'] = pd.to_datetime(tasks['Resolved At'], errors='coerce')
     tasks['failed_ts']   = pd.to_datetime(tasks['Failed At'],   errors='coerce')
     tasks['closed_ts']   = pd.to_datetime(tasks['Closed At'],   errors='coerce')
-    tasks['end_ts'] = (
-        tasks['resolved_ts']
-        .fillna(tasks['failed_ts'])
-        .fillna(tasks['closed_ts'])
-    )
+    tasks['end_ts'] = tasks['resolved_ts'].fillna(tasks['failed_ts']).fillna(tasks['closed_ts'])
 
-    # ── PAIR CHECKIN → CHECKOUT (shift = checkin date) ──────────────────────
+    # ── BUILD SESSIONS: checkin → next checkout ──────────────────────────────
     ci = logs[logs['Action'] == 'OPS_USER_CHECKIN'][['User Name','ts']].sort_values(['User Name','ts'])
     co = logs[logs['Action'] == 'OPS_USER_CHECKOUT'][['User Name','ts']].sort_values(['User Name','ts'])
 
@@ -62,21 +58,19 @@ def load_and_build():
                 'User Name':  agent,
                 'checkin':    cin,
                 'checkout':   cout,
-                # shift_date = the date agent CHECKED IN (local time)
-                'shift_date': cin.date()
+                'shift_date': cin.date()   # shift = checkin date
             })
 
     sessions_df = pd.DataFrame(sessions)
     sessions_df['shift_hours'] = (
         (sessions_df['checkout'] - sessions_df['checkin'])
         .dt.total_seconds() / 3600
-    ).round(2)
+    ).round(1)
 
-    # ── LOOKUP: agent → sessions list ───────────────────────────────────────
+    # ── SESSION LOOKUP ───────────────────────────────────────────────────────
     session_lookup = {}
     for _, s in sessions_df.iterrows():
-        agent = s['User Name']
-        session_lookup.setdefault(agent, []).append(
+        session_lookup.setdefault(s['User Name'], []).append(
             (s['checkin'], s['checkout'], s['shift_date'])
         )
 
@@ -85,125 +79,98 @@ def load_and_build():
             return None
         for cin, cout, sd in session_lookup[agent]:
             if pd.isna(cout):
-                if t >= cin:
-                    return sd
+                if t >= cin: return sd
             elif cin <= t <= cout:
                 return sd
         return None
 
-    # ── ASSIGN TASKS TO SESSIONS ─────────────────────────────────────────────
-    tasks['shift_date'] = tasks.apply(
-        lambda r: find_shift(r['User Name'], r['created_ts']), axis=1
-    )
+    # ── ASSIGN TASKS & SWAPS TO SESSIONS ────────────────────────────────────
+    tasks['shift_date'] = tasks.apply(lambda r: find_shift(r['User Name'], r['created_ts']), axis=1)
 
-    # ── ASSIGN SWAPS TO SESSIONS ─────────────────────────────────────────────
     swap_logs = logs[logs['Action'] == 'BATTERY_SWAP_VEHICLE'][['User Name','ts']].copy()
-    swap_logs['shift_date'] = swap_logs.apply(
-        lambda r: find_shift(r['User Name'], r['ts']), axis=1
-    )
+    swap_logs['shift_date'] = swap_logs.apply(lambda r: find_shift(r['User Name'], r['ts']), axis=1)
     swaps_df = (
         swap_logs.dropna(subset=['shift_date'])
-        .groupby(['User Name','shift_date'])
-        .size().reset_index(name='Swaps')
+        .groupby(['User Name','shift_date']).size().reset_index(name='Swaps')
     )
 
-    # ── FIRST / LAST TASK PER SESSION ────────────────────────────────────────
-    tasks_with_shift = tasks.dropna(subset=['shift_date'])
-    first_task = (
-        tasks_with_shift
-        .groupby(['User Name','shift_date'])['created_ts']
-        .min().reset_index(name='first_task_ts')
-    )
-    last_task = (
-        tasks_with_shift
-        .groupby(['User Name','shift_date'])['end_ts']
-        .max().reset_index(name='last_task_ts')
-    )
+    # ── AGGREGATE PER SESSION ────────────────────────────────────────────────
+    tasks_s = tasks.dropna(subset=['shift_date'])
 
-    # ── TASK COUNTS PER SESSION ──────────────────────────────────────────────
+    first_task = tasks_s.groupby(['User Name','shift_date'])['created_ts'].min().reset_index(name='first_task_ts')
+    last_task  = tasks_s.groupby(['User Name','shift_date'])['end_ts'].max().reset_index(name='last_task_ts')
+
     task_counts = (
-        tasks_with_shift
-        .groupby(['User Name','shift_date','Status'])
-        .size().reset_index(name='count')
-        .pivot_table(
-            index=['User Name','shift_date'],
-            columns='Status', values='count', fill_value=0
-        ).reset_index()
-    )
-    for col in ['Success','Failed','closed']:
-        if col not in task_counts.columns:
-            task_counts[col] = 0
-    task_counts['Total'] = (
-        task_counts['Success'] + task_counts['Failed'] + task_counts['closed']
-    )
-    task_counts['Success %'] = (
-        task_counts['Success'] /
-        task_counts['Total'].replace(0, float('nan'))
-    ).fillna(0).mul(100).round(1)
-
-    # ── AREA MAP ─────────────────────────────────────────────────────────────
-    area_map = (
-        tasks.groupby('User Name')['Area']
-        .agg(lambda x: x.mode()[0] if len(x) > 0 else '')
+        tasks_s.groupby(['User Name','shift_date','Status']).size()
+        .reset_index(name='count')
+        .pivot_table(index=['User Name','shift_date'], columns='Status', values='count', fill_value=0)
         .reset_index()
     )
+    for col in ['Success','Failed','closed']:
+        if col not in task_counts.columns: task_counts[col] = 0
+    task_counts['Total']     = task_counts['Success'] + task_counts['Failed'] + task_counts['closed']
+    task_counts['Success %'] = (
+        task_counts['Success'] / task_counts['Total'].replace(0, float('nan'))
+    ).fillna(0).mul(100).round(0).astype(int)
 
-    # ── MERGE ALL INTO DAILY ─────────────────────────────────────────────────
-    # Only keep sessions that have at least 1 task
+    area_map = tasks.groupby('User Name')['Area'].agg(
+        lambda x: x.mode()[0] if len(x) > 0 else ''
+    ).reset_index()
+
+    # ── MERGE ────────────────────────────────────────────────────────────────
     daily = sessions_df.merge(task_counts, on=['User Name','shift_date'], how='inner')
-    daily = daily.merge(first_task, on=['User Name','shift_date'], how='left')
-    daily = daily.merge(last_task,  on=['User Name','shift_date'], how='left')
-    daily = daily.merge(swaps_df,   on=['User Name','shift_date'], how='left')
-    daily = daily.merge(area_map,   on='User Name',                how='left')
+    daily = daily.merge(first_task,        on=['User Name','shift_date'], how='left')
+    daily = daily.merge(last_task,         on=['User Name','shift_date'], how='left')
+    daily = daily.merge(swaps_df,          on=['User Name','shift_date'], how='left')
+    daily = daily.merge(area_map,          on='User Name',                how='left')
 
-    # Gaps
     daily['checkin_to_first_task_min'] = (
-        (daily['first_task_ts'] - daily['checkin'])
-        .dt.total_seconds() / 60
-    ).round(1)
+        (daily['first_task_ts'] - daily['checkin']).dt.total_seconds() / 60
+    ).round(0).astype('Int64')
+
     daily['last_task_to_checkout_min'] = (
-        (daily['checkout'] - daily['last_task_ts'])
-        .dt.total_seconds() / 60
-    ).round(1)
+        (daily['checkout'] - daily['last_task_ts']).dt.total_seconds() / 60
+    ).round(0).astype('Int64')
 
-    # Fill only numeric NaN (don't touch timestamps)
-    num_cols = daily.select_dtypes(include='number').columns
-    daily[num_cols] = daily[num_cols].fillna(0)
+    # Integer-ify counts
+    for col in ['Success','Failed','closed','Total','Swaps']:
+        if col in daily.columns:
+            daily[col] = daily[col].fillna(0).astype(int)
 
+    daily = daily[daily['Total'] > 0].copy()
     return daily, tasks, area_map
 
 daily_all, tasks_raw, area_map = load_and_build()
+
+# ── SHIFT DATE LABEL: "01 Saturday" ──────────────────────────────────────────
+def fmt_shift_date(d):
+    if isinstance(d, str):
+        d = datetime.date.fromisoformat(d)
+    return d.strftime('%d %B %A')   # e.g. "02 March Sunday"
+
+shift_dates_raw    = sorted(daily_all['shift_date'].dropna().unique())
+shift_date_options = ["All Shifts"] + [fmt_shift_date(d) for d in shift_dates_raw]
+shift_date_map     = {fmt_shift_date(d): d for d in shift_dates_raw}
 
 # ── SIDEBAR ────────────────────────────────────────────────────────────────────
 st.sidebar.title("⚡ Ops Dashboard")
 st.sidebar.markdown("---")
 
-all_areas   = sorted(daily_all['Area'].dropna().unique().tolist())
-sel_area    = st.sidebar.selectbox("📍 Area", ["All Areas"] + all_areas)
-
-shift_dates = sorted(daily_all['shift_date'].dropna().unique())
-sel_date    = st.sidebar.selectbox(
-    "📅 Shift Date (checkin day)",
-    ["All Shifts"] + [str(d) for d in shift_dates]
-)
-
+all_areas = sorted(daily_all['Area'].dropna().unique().tolist())
+sel_area  = st.sidebar.selectbox("📍 Area", ["All Areas"] + all_areas)
+sel_date  = st.sidebar.selectbox("📅 Shift Day", shift_date_options)
 st.sidebar.markdown("---")
-st.sidebar.caption("Shift = checkin → checkout. Night shifts span midnight but are grouped under checkin date.")
+st.sidebar.caption("Shift = checkin → checkout. Night shifts span midnight but grouped under checkin day.")
 
 # ── FILTER ────────────────────────────────────────────────────────────────────
-import datetime
-
 daily = daily_all.copy()
 
 if sel_area != "All Areas":
     daily = daily[daily['Area'] == sel_area]
 
 if sel_date != "All Shifts":
-    sd = datetime.date.fromisoformat(sel_date)
+    sd = shift_date_map[sel_date]
     daily = daily[daily['shift_date'] == sd]
-
-# Remove rows where Total == 0 (no tasks at all)
-daily = daily[daily['Total'] > 0].copy()
 
 # ── KPI CARDS ─────────────────────────────────────────────────────────────────
 st.markdown(f"## ⚡ Ops Performance — {sel_area} | {sel_date}")
@@ -214,23 +181,16 @@ total_success = int(daily['Success'].sum())
 total_failed  = int(daily['Failed'].sum())
 total_closed  = int(daily['closed'].sum())
 total_tasks   = total_success + total_failed + total_closed
-success_rate  = round(total_success / total_tasks * 100, 1) if total_tasks > 0 else 0
+success_rate  = int(round(total_success / total_tasks * 100)) if total_tasks > 0 else 0
 total_swaps   = int(daily['Swaps'].sum())
 
-valid_gap_in  = daily[daily['checkin_to_first_task_min'] > 0]['checkin_to_first_task_min']
-valid_gap_out = daily[daily['last_task_to_checkout_min'] > 0]['last_task_to_checkout_min']
-avg_gap_in    = round(valid_gap_in.mean(),  1) if len(valid_gap_in)  > 0 else 0
-avg_gap_out   = round(valid_gap_out.mean(), 1) if len(valid_gap_out) > 0 else 0
-
-c1,c2,c3,c4,c5,c6,c7,c8 = st.columns(8)
-c1.metric("👥 Agents",        total_agents)
-c2.metric("✅ Success",       total_success)
-c3.metric("❌ Failed",        total_failed)
-c4.metric("🔒 Closed",        total_closed)
-c5.metric("📈 Success %",     f"{success_rate}%")
-c6.metric("🔋 Swaps",         total_swaps)
-c7.metric("⏱ Checkin→Task",  f"{avg_gap_in}m")
-c8.metric("⏱ Task→Checkout", f"{avg_gap_out}m")
+c1,c2,c3,c4,c5,c6 = st.columns(6)
+c1.metric("👥 Agents",    total_agents)
+c2.metric("✅ Success",   total_success)
+c3.metric("❌ Failed",    total_failed)
+c4.metric("🔒 Closed",    total_closed)
+c5.metric("📈 Success %", f"{success_rate}%")
+c6.metric("🔋 Swaps",     total_swaps)
 
 st.markdown("---")
 
@@ -244,21 +204,26 @@ table = daily[[
     'Success','Failed','closed','Total','Success %','Swaps'
 ]].copy()
 
+# Format shift date as "01 Saturday"
+table['shift_date'] = pd.to_datetime(table['shift_date']).dt.strftime('%d %B %A')
+
+# Format timestamps
+table['checkin']  = pd.to_datetime(table['checkin'],  errors='coerce').dt.strftime('%d %b %H:%M').fillna('-')
+table['checkout'] = pd.to_datetime(table['checkout'], errors='coerce').dt.strftime('%d %b %H:%M').fillna('-')
+
+# Shift hours: integer if whole number
+table['shift_hours'] = table['shift_hours'].apply(
+    lambda x: int(x) if pd.notna(x) and x == int(x) else round(x, 1) if pd.notna(x) else '-'
+)
+
 table.columns = [
-    'Agent','Area','Shift Date',
-    'Check In (local)','Check Out (local)','Shift Hrs',
+    'Agent','Area','Shift Day',
+    'Check In','Check Out','Shift Hrs',
     '⏱ Checkin→1st Task (min)','⏱ Last Task→Checkout (min)',
-    '✅ Success','❌ Failed','🔒 Closed','Total Tasks','Success %','🔋 Swaps'
+    '✅ Success','❌ Failed','🔒 Closed','Total','Success %','🔋 Swaps'
 ]
 
-# Format timestamps as local time strings
-table['Check In (local)']  = pd.to_datetime(table['Check In (local)'],  errors='coerce').dt.strftime('%Y-%m-%d %H:%M').fillna('-')
-table['Check Out (local)'] = pd.to_datetime(table['Check Out (local)'], errors='coerce').dt.strftime('%Y-%m-%d %H:%M').fillna('-')
-table['Shift Hrs'] = table['Shift Hrs'].round(1)
-
-# Remove any remaining rows with 0 total tasks
-table = table[table['Total Tasks'] > 0]
-table = table.sort_values(['Shift Date','Area','Agent']).reset_index(drop=True)
+table = table.sort_values(['Shift Day','Area','Agent']).reset_index(drop=True)
 
 def color_success(val):
     if isinstance(val, (int, float)):
@@ -289,7 +254,8 @@ fig_bar.update_layout(
     paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e',
     font_color='#e6edf3', legend=dict(bgcolor='#1a1d2e'),
     xaxis=dict(tickangle=-35, gridcolor='#21262d'),
-    yaxis=dict(gridcolor='#21262d'), margin=dict(t=20, b=10)
+    yaxis=dict(gridcolor='#21262d', tickformat='d'),
+    margin=dict(t=20, b=10)
 )
 st.plotly_chart(fig_bar, use_container_width=True)
 
@@ -301,7 +267,7 @@ with col_left:
     gap_in = (
         daily[daily['checkin_to_first_task_min'] > 0]
         .groupby('User Name')['checkin_to_first_task_min']
-        .mean().reset_index()
+        .mean().round(0).astype(int).reset_index()
         .sort_values('checkin_to_first_task_min', ascending=True)
     )
     if len(gap_in) > 0:
@@ -311,12 +277,15 @@ with col_left:
             orientation='h',
             color='checkin_to_first_task_min',
             color_continuous_scale=['#3fb950','#e3b341','#f85149'],
-            labels={'checkin_to_first_task_min':'Avg Minutes','y':''}
+            labels={'checkin_to_first_task_min':'Minutes','y':''},
+            text='checkin_to_first_task_min'
         )
+        fig_gin.update_traces(textposition='outside')
         fig_gin.update_layout(
             height=430, paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e',
             font_color='#e6edf3', coloraxis_showscale=False,
-            xaxis=dict(gridcolor='#21262d'), yaxis=dict(gridcolor='#21262d'),
+            xaxis=dict(gridcolor='#21262d', tickformat='d'),
+            yaxis=dict(gridcolor='#21262d'),
             margin=dict(t=10, b=10)
         )
         st.plotly_chart(fig_gin, use_container_width=True)
@@ -326,7 +295,7 @@ with col_right:
     gap_out = (
         daily[daily['last_task_to_checkout_min'] > 0]
         .groupby('User Name')['last_task_to_checkout_min']
-        .mean().reset_index()
+        .mean().round(0).astype(int).reset_index()
         .sort_values('last_task_to_checkout_min', ascending=True)
     )
     if len(gap_out) > 0:
@@ -336,12 +305,15 @@ with col_right:
             orientation='h',
             color='last_task_to_checkout_min',
             color_continuous_scale=['#3fb950','#e3b341','#f85149'],
-            labels={'last_task_to_checkout_min':'Avg Minutes','y':''}
+            labels={'last_task_to_checkout_min':'Minutes','y':''},
+            text='last_task_to_checkout_min'
         )
+        fig_gout.update_traces(textposition='outside')
         fig_gout.update_layout(
             height=430, paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e',
             font_color='#e6edf3', coloraxis_showscale=False,
-            xaxis=dict(gridcolor='#21262d'), yaxis=dict(gridcolor='#21262d'),
+            xaxis=dict(gridcolor='#21262d', tickformat='d'),
+            yaxis=dict(gridcolor='#21262d'),
             margin=dict(t=10, b=10)
         )
         st.plotly_chart(fig_gout, use_container_width=True)
@@ -359,17 +331,20 @@ with col3:
             x=swap_agg['User Name'].apply(lambda n: ' '.join(str(n).split()[:2])),
             y='Swaps', color='Swaps',
             color_continuous_scale=['#1a1d2e','#39d353'],
-            labels={'x':'','Swaps':'Swaps'}
+            labels={'x':'','Swaps':'Swaps'},
+            text='Swaps'
         )
+        fig_swaps.update_traces(textposition='outside')
         fig_swaps.update_layout(
             height=380, paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e',
             font_color='#e6edf3', coloraxis_showscale=False,
             xaxis=dict(tickangle=-35, gridcolor='#21262d'),
-            yaxis=dict(gridcolor='#21262d'), margin=dict(t=10, b=10)
+            yaxis=dict(gridcolor='#21262d', tickformat='d'),
+            margin=dict(t=10, b=10)
         )
         st.plotly_chart(fig_swaps, use_container_width=True)
     else:
-        st.info("No swap data for this filter.")
+        st.info("No swap data.")
 
 with col4:
     st.markdown('<div class="section-title">📍 Task Outcomes by Area</div>', unsafe_allow_html=True)
@@ -389,7 +364,8 @@ with col4:
         fig_area.update_layout(
             height=380, paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e',
             font_color='#e6edf3', legend=dict(bgcolor='#1a1d2e'),
-            xaxis=dict(gridcolor='#21262d'), yaxis=dict(gridcolor='#21262d'),
+            xaxis=dict(gridcolor='#21262d'),
+            yaxis=dict(gridcolor='#21262d', tickformat='d'),
             margin=dict(t=10, b=10)
         )
         st.plotly_chart(fig_area, use_container_width=True)
@@ -402,20 +378,24 @@ if len(shift_agg) > 0:
     shift_agg['color'] = shift_agg['shift_hours'].apply(
         lambda h: '#3fb950' if h >= 8 else ('#e3b341' if h >= 4 else '#f85149')
     )
+    shift_agg['label'] = shift_agg['shift_hours'].apply(
+        lambda h: str(int(h)) if h == int(h) else str(round(h, 1))
+    )
     fig_shift = px.bar(
         shift_agg,
         x=shift_agg['User Name'].apply(lambda n: ' '.join(str(n).split()[:2])),
         y='shift_hours', color='color', color_discrete_map='identity',
+        text='label',
         labels={'x':'','shift_hours':'Hours'}
     )
-    fig_shift.add_hline(
-        y=8, line_dash='dash', line_color='#e3b341',
-        opacity=0.6, annotation_text='8h target'
-    )
+    fig_shift.update_traces(textposition='outside')
+    fig_shift.add_hline(y=8, line_dash='dash', line_color='#e3b341',
+                        opacity=0.6, annotation_text='8h target')
     fig_shift.update_layout(
         height=340, paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e',
         font_color='#e6edf3', showlegend=False,
         xaxis=dict(tickangle=-35, gridcolor='#21262d'),
-        yaxis=dict(gridcolor='#21262d'), margin=dict(t=10, b=10)
+        yaxis=dict(gridcolor='#21262d', tickformat='d'),
+        margin=dict(t=10, b=10)
     )
     st.plotly_chart(fig_shift, use_container_width=True)
