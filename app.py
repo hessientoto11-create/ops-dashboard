@@ -91,8 +91,27 @@ def load_and_build(logs_file, tasks_file):
     swaps_df = swap_logs.dropna(subset=['shift_date']).groupby(['User Name','shift_date']).size().reset_index(name='Swaps')
 
     tasks_s    = tasks.dropna(subset=['shift_date'])
-    first_task = tasks_s.groupby(['User Name','shift_date'])['created_ts'].min().reset_index(name='first_task_ts')
-    last_task  = tasks_s.groupby(['User Name','shift_date'])['end_ts'].max().reset_index(name='last_task_ts')
+    # Combine ALL log actions (excl checkin/checkout) + ALL task timestamps
+    # to get the true first and last action per session
+    task_ts_all = pd.concat([
+        tasks_s[['User Name','shift_date','created_ts']].rename(columns={'created_ts':'ts'}),
+        tasks_s[['User Name','shift_date','resolved_ts']].rename(columns={'resolved_ts':'ts'}),
+        tasks_s[['User Name','shift_date','failed_ts']].rename(columns={'failed_ts':'ts'}),
+        tasks_s[['User Name','shift_date','closed_ts']].rename(columns={'closed_ts':'ts'}),
+    ]).dropna(subset=['ts'])
+
+    # Assign shift_date to log actions too
+    log_action_ts = logs[~logs['Action'].isin(['OPS_USER_CHECKIN','OPS_USER_CHECKOUT'])][['User Name','ts']].copy()
+    log_action_ts['shift_date'] = log_action_ts.apply(lambda r: find_shift(r['User Name'], r['ts']), axis=1)
+    log_action_ts = log_action_ts.dropna(subset=['shift_date'])
+
+    all_actions_df = pd.concat([
+        task_ts_all[['User Name','shift_date','ts']],
+        log_action_ts[['User Name','shift_date','ts']]
+    ]).dropna(subset=['ts'])
+
+    first_task = all_actions_df.groupby(['User Name','shift_date'])['ts'].min().reset_index(name='first_task_ts')
+    last_task  = all_actions_df.groupby(['User Name','shift_date'])['ts'].max().reset_index(name='last_task_ts')
 
     task_counts = (
         tasks_s.groupby(['User Name','shift_date','Status']).size()
@@ -183,7 +202,7 @@ table['shift_hours'] = table['shift_hours'].apply(
 )
 
 table.columns = ['Agent','Area','Shift Day','Check In','Check Out','Shift Hrs',
-                 'Checkin to 1st Task (min)','Last Task to Checkout (min)',
+                 'Checkin to 1st Action (min)','Last Action to Checkout (min)',
                  'Success','Failed','Closed','Total','Success %','Swaps']
 table = table.sort_values(['Shift Day','Area','Agent']).reset_index(drop=True)
 
@@ -216,7 +235,7 @@ st.plotly_chart(fig_bar, use_container_width=True)
 col_left, col_right = st.columns(2)
 
 with col_left:
-    st.markdown('<div class="section-title">Checkin to First Task (avg min)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Checkin to First Action (avg min)</div>', unsafe_allow_html=True)
     gap_in = (daily[daily['checkin_to_first_task_min'] > 0]
         .groupby('User Name')['checkin_to_first_task_min'].mean().round(0).astype(int).reset_index()
         .sort_values('checkin_to_first_task_min', ascending=True))
@@ -234,7 +253,7 @@ with col_left:
         st.plotly_chart(fig_gin, use_container_width=True)
 
 with col_right:
-    st.markdown('<div class="section-title">Last Task to Checkout (avg min)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Last Action to Checkout (avg min)</div>', unsafe_allow_html=True)
     gap_out = (daily[daily['last_task_to_checkout_min'] > 0]
         .groupby('User Name')['last_task_to_checkout_min'].mean().round(0).astype(int).reset_index()
         .sort_values('last_task_to_checkout_min', ascending=True))
