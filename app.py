@@ -196,9 +196,9 @@ table = daily[['User Name','Area','shift_date','checkin','checkout','shift_hours
 
 table['shift_date'] = pd.to_datetime(table['shift_date']).dt.strftime('%d %B %A')
 table['checkin']    = pd.to_datetime(table['checkin'],  errors='coerce').dt.strftime('%d %b %H:%M').fillna('-')
-table['checkout']   = pd.to_datetime(table['checkout'], errors='coerce').dt.strftime('%d %b %H:%M').fillna('-')
+table['checkout']   = pd.to_datetime(table['checkout'], errors='coerce').dt.strftime('%d %b %H:%M').fillna('Missed')
 table['shift_hours'] = table['shift_hours'].apply(
-    lambda x: int(x) if pd.notna(x) and float(x) == int(float(x)) else round(float(x), 1) if pd.notna(x) else '-'
+    lambda x: int(x) if pd.notna(x) and float(x) == int(float(x)) else round(float(x), 1) if pd.notna(x) else 'Missed'
 )
 
 table.columns = ['Agent','Area','Shift Day','Check In','Check Out','Shift Hrs',
