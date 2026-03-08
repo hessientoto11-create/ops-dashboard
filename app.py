@@ -178,13 +178,14 @@ total_tasks   = total_success + total_failed + total_closed
 success_rate  = int(round(total_success / total_tasks * 100)) if total_tasks > 0 else 0
 total_swaps   = int(daily['Swaps'].sum())
 
-c1,c2,c3,c4,c5,c6 = st.columns(6)
+c1,c2,c3,c4,c5,c6,c7 = st.columns(7)
 c1.metric("Agents",    total_agents)
 c2.metric("Success",   total_success)
 c3.metric("Failed",    total_failed)
 c4.metric("Closed",    total_closed)
-c5.metric("Success %", f"{success_rate}%")
-c6.metric("Swaps",     total_swaps)
+c5.metric("Total Tasks", total_tasks)
+c6.metric("Success %", f"{success_rate}%")
+c7.metric("Swaps",     total_swaps)
 st.markdown("---")
 
 # AGENT TABLE
