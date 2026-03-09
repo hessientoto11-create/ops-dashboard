@@ -99,6 +99,14 @@ def load_and_build(logs_bytes, tasks_bytes):
     logs  = pd.read_excel(io.BytesIO(logs_bytes))
     tasks = pd.read_excel(io.BytesIO(tasks_bytes))
 
+    # Validate required columns
+    required_logs  = {'User Name','Action','Vehicle','Date (Local)'}
+    required_tasks = {'User Name','Status','Area','Created At'}
+    missing_logs   = required_logs  - set(logs.columns)
+    missing_tasks  = required_tasks - set(tasks.columns)
+    if missing_logs:  raise ValueError(f"User Logs missing columns: {missing_logs}")
+    if missing_tasks: raise ValueError(f"Ops Tasks missing columns: {missing_tasks}")
+
     logs['User Name']  = logs['User Name'].str.strip()
     tasks['User Name'] = tasks['User Name'].str.strip()
 
@@ -191,15 +199,28 @@ def load_and_build(logs_bytes, tasks_bytes):
     first_task = all_actions_df.groupby(['User Name','shift_date'])['ts'].min().reset_index(name='first_task_ts')
     last_task  = all_actions_df.groupby(['User Name','shift_date'])['ts'].max().reset_index(name='last_task_ts')
 
+    # Dynamic status columns — works with any status values in the file
     task_counts = (
         tasks_s.groupby(['User Name','shift_date','Status']).size()
         .reset_index(name='count')
         .pivot_table(index=['User Name','shift_date'], columns='Status', values='count', fill_value=0)
         .reset_index()
     )
-    for col in ['Success','Failed','closed']:
-        if col not in task_counts.columns: task_counts[col] = 0
-    task_counts['Total']     = task_counts['Success'] + task_counts['Failed'] + task_counts['closed']
+    task_counts.columns.name = None
+
+    # Detect status columns dynamically
+    fixed_cols   = ['User Name','shift_date']
+    status_cols  = [c for c in task_counts.columns if c not in fixed_cols]
+    success_cols = [c for c in status_cols if str(c).lower() in ('success',)]
+    failed_cols  = [c for c in status_cols if str(c).lower() in ('failed',)]
+    closed_cols  = [c for c in status_cols if str(c).lower() in ('closed',)]
+    other_cols   = [c for c in status_cols if c not in success_cols + failed_cols + closed_cols]
+
+    task_counts['Success']  = task_counts[success_cols].sum(axis=1) if success_cols else 0
+    task_counts['Failed']   = task_counts[failed_cols].sum(axis=1)  if failed_cols  else 0
+    task_counts['closed']   = task_counts[closed_cols].sum(axis=1)  if closed_cols  else 0
+    task_counts['Other']    = task_counts[other_cols].sum(axis=1)   if other_cols   else 0
+    task_counts['Total']    = task_counts['Success'] + task_counts['Failed'] + task_counts['closed'] + task_counts['Other']
     task_counts['Success %'] = (task_counts['Success'] / task_counts['Total'].replace(0, float('nan'))).fillna(0).mul(100).round(0).astype(int)
 
     area_map = tasks.groupby('User Name')['Area'].agg(lambda x: x.mode()[0] if len(x) > 0 else '').reset_index()
@@ -214,7 +235,7 @@ def load_and_build(logs_bytes, tasks_bytes):
     daily['checkin_to_first_min'] = ((daily['first_task_ts'] - daily['checkin']).dt.total_seconds() / 60).round(0).astype('Int64')
     daily['last_to_checkout_min'] = ((daily['checkout'] - daily['last_task_ts']).dt.total_seconds() / 60).round(0).astype('Int64')
 
-    for col in ['Success','Failed','closed','Total','Swaps','Activated','Deactivated']:
+    for col in ['Success','Failed','closed','Other','Total','Swaps','Activated','Deactivated']:
         if col in daily.columns:
             daily[col] = daily[col].fillna(0).astype(int)
 
@@ -254,7 +275,8 @@ total_agents  = daily['User Name'].nunique()
 total_success = int(daily['Success'].sum())
 total_failed  = int(daily['Failed'].sum())
 total_closed  = int(daily['closed'].sum())
-total_tasks   = total_success + total_failed + total_closed
+total_other   = int(daily['Other'].sum()) if 'Other' in daily.columns else 0
+total_tasks   = total_success + total_failed + total_closed + total_other
 success_rate  = int(round(total_success / total_tasks * 100)) if total_tasks > 0 else 0
 total_swaps   = int(daily['Swaps'].sum())
 total_activated   = int(daily['Activated'].sum()) if 'Activated' in daily.columns else 0
@@ -296,7 +318,7 @@ table.loc[no_checkout, 'last_to_checkout_min'] = None
 
 table.columns = ['Agent','Area','Shift Day','Check In','Check Out','Shift Hrs',
                  'Checkin to 1st Action (min)','Last Action to Checkout (min)',
-                 'Success','Failed','Closed','Total','Success %','Swaps','Activated','Deactivated']
+                 'Success','Failed','Closed','Other','Total','Success %','Swaps','Activated','Deactivated']
 table = table.sort_values(['Shift Day','Area','Agent']).reset_index(drop=True)
 
 def color_success(val):
@@ -310,7 +332,8 @@ st.dataframe(table.style.applymap(color_success, subset=['Success %']), use_cont
 
 # TASK OUTCOMES BY AGENT
 st.markdown('<div class="section-title">Task Outcomes by Agent</div>', unsafe_allow_html=True)
-agg    = daily.groupby('User Name')[['Success','Failed','closed','Total']].sum().reset_index()
+agg_cols = [c for c in ['Success','Failed','closed','Other','Total'] if c in daily.columns]
+agg    = daily.groupby('User Name')[agg_cols].sum().reset_index()
 agg    = agg[agg['Total'] > 0].sort_values('Total', ascending=False).head(25)
 labels = agg['User Name'].apply(lambda n: ' '.join(str(n).split()[:2]))
 
@@ -318,6 +341,8 @@ fig_bar = go.Figure()
 fig_bar.add_trace(go.Bar(name='Success', x=labels, y=agg['Success'], marker_color='#3fb950'))
 fig_bar.add_trace(go.Bar(name='Failed',  x=labels, y=agg['Failed'],  marker_color='#f85149'))
 fig_bar.add_trace(go.Bar(name='Closed',  x=labels, y=agg['closed'],  marker_color='#8b949e'))
+if 'Other' in agg.columns and int(agg['Other'].sum()) > 0:
+    fig_bar.add_trace(go.Bar(name='Other', x=labels, y=agg['Other'], marker_color='#58a6ff'))
 fig_bar.update_layout(barmode='stack', height=400, paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e',
     font_color='#e6edf3', legend=dict(bgcolor='#1a1d2e'),
     xaxis=dict(tickangle=-35, gridcolor='#21262d'), yaxis=dict(gridcolor='#21262d', tickformat='d'),
@@ -384,13 +409,14 @@ with col3:
 
 with col4:
     st.markdown('<div class="section-title">Task Outcomes by Area</div>', unsafe_allow_html=True)
-    area_agg = daily.groupby('Area')[['Success','Failed','closed']].sum().reset_index()
+    area_cols_avail = [c for c in ['Success','Failed','closed','Other'] if c in daily.columns]
+    area_agg = daily.groupby('Area')[area_cols_avail].sum().reset_index()
     area_agg = area_agg[area_agg['Area'].notna() & (area_agg['Area'] != '')]
     area_melted = area_agg.melt(id_vars='Area', value_vars=['Success','Failed','closed'], var_name='Status', value_name='count')
     area_melted = area_melted[area_melted['count'] > 0]
     if len(area_melted) > 0:
         fig_area = px.bar(area_melted, x='Area', y='count', color='Status',
-            color_discrete_map={'Success':'#3fb950','Failed':'#f85149','closed':'#8b949e'},
+            color_discrete_map={'Success':'#3fb950','Failed':'#f85149','closed':'#8b949e','Other':'#58a6ff'},
             barmode='stack', labels={'count':'Tasks'})
         fig_area.update_layout(height=380, paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e',
             font_color='#e6edf3', legend=dict(bgcolor='#1a1d2e'),
