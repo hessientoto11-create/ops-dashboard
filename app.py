@@ -297,28 +297,33 @@ st.markdown("---")
 # AGENT TABLE
 st.markdown('<div class="section-title">Daily Agent Breakdown</div>', unsafe_allow_html=True)
 
-# Ensure Activated/Deactivated exist
-if 'Activated' not in daily.columns:   daily['Activated']   = 0
-if 'Deactivated' not in daily.columns: daily['Deactivated'] = 0
-table = daily[['User Name','Area','shift_date','checkin','checkout','shift_hours',
-               'checkin_to_first_min','last_to_checkout_min',
-               'Success','Failed','closed','Total','Success %','Swaps',
-               'Activated','Deactivated']].copy()
+# Ensure optional columns exist
+for col in ['Activated','Deactivated','Other']:
+    if col not in daily.columns: daily[col] = 0
+
+# Build table dynamically — fixed cols + whatever status cols exist
+fixed_left  = ['User Name','Area','shift_date','checkin','checkout','shift_hours',
+               'checkin_to_first_min','last_to_checkout_min']
+fixed_right = ['Total','Success %','Swaps','Activated','Deactivated']
+status_cols = [c for c in ['Success','Failed','closed','Other'] if c in daily.columns]
+all_cols    = fixed_left + status_cols + fixed_right
+table = daily[all_cols].copy()
 
 table['shift_date'] = pd.to_datetime(table['shift_date']).dt.strftime('%d %B %A')
-table['checkin']    = pd.to_datetime(table['checkin'],  errors='coerce').dt.strftime('%d %b %H:%M').fillna('-')
-# Track which rows have no checkout before formatting
+table['checkin']    = pd.to_datetime(table['checkin'], errors='coerce').dt.strftime('%d %b %H:%M').fillna('-')
 no_checkout = table['checkout'].isna()
 table['checkout']   = pd.to_datetime(table['checkout'], errors='coerce').dt.strftime('%d %b %H:%M').fillna('Missed')
 table['shift_hours'] = table['shift_hours'].apply(
     lambda x: int(x) if pd.notna(x) and float(x) == int(float(x)) else round(float(x), 1) if pd.notna(x) else 'Missed'
 )
-# When checkout is missed, last action → checkout gap is meaningless
 table.loc[no_checkout, 'last_to_checkout_min'] = None
 
-table.columns = ['Agent','Area','Shift Day','Check In','Check Out','Shift Hrs',
-                 'Checkin to 1st Action (min)','Last Action to Checkout (min)',
-                 'Success','Failed','Closed','Other','Total','Success %','Swaps','Activated','Deactivated']
+# Rename dynamically to match exact column count
+rename_left  = ['Agent','Area','Shift Day','Check In','Check Out','Shift Hrs',
+                'Checkin to 1st Action (min)','Last Action to Checkout (min)']
+rename_status = [c.capitalize() if c != 'closed' else 'Closed' for c in status_cols]
+rename_right = ['Total','Success %','Swaps','Activated','Deactivated']
+table.columns = rename_left + rename_status + rename_right
 table = table.sort_values(['Shift Day','Area','Agent']).reset_index(drop=True)
 
 def color_success(val):
