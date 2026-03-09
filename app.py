@@ -27,6 +27,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # SIDEBAR
+import os, time
+
 st.sidebar.title("Ops Dashboard")
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📂 Upload Data")
@@ -34,22 +36,56 @@ uploaded_logs  = st.sidebar.file_uploader("User Logs (.xlsx)",  type=["xlsx"], k
 uploaded_tasks = st.sidebar.file_uploader("Ops Tasks (.xlsx)", type=["xlsx"], key="tasks")
 st.sidebar.markdown("---")
 
+# ── PERSISTENT STORAGE: save files to disk on the server ─────────────────────
+# Files are stored on the Streamlit Cloud server filesystem and survive
+# browser close/reopen as long as the server instance is running.
+STORAGE_DIR   = ".streamlit_data"
+LOGS_SAVED    = os.path.join(STORAGE_DIR, "user_logs.xlsx")
+TASKS_SAVED   = os.path.join(STORAGE_DIR, "ops_tasks.xlsx")
+META_LOGS     = os.path.join(STORAGE_DIR, "logs_name.txt")
+META_TASKS    = os.path.join(STORAGE_DIR, "tasks_name.txt")
+os.makedirs(STORAGE_DIR, exist_ok=True)
+
 if uploaded_logs is not None:
-    st.session_state['logs_bytes'] = uploaded_logs.read()
+    raw = uploaded_logs.read()
+    with open(LOGS_SAVED, 'wb') as f: f.write(raw)
+    with open(META_LOGS,  'w') as f:  f.write(uploaded_logs.name)
+    st.session_state['logs_bytes'] = raw
     st.session_state['logs_name']  = uploaded_logs.name
     st.cache_data.clear()
+
 if uploaded_tasks is not None:
-    st.session_state['tasks_bytes'] = uploaded_tasks.read()
+    raw = uploaded_tasks.read()
+    with open(TASKS_SAVED, 'wb') as f: f.write(raw)
+    with open(META_TASKS,  'w') as f:  f.write(uploaded_tasks.name)
+    st.session_state['tasks_bytes'] = raw
     st.session_state['tasks_name']  = uploaded_tasks.name
     st.cache_data.clear()
+
+# Restore from disk if session was lost (browser closed and reopened)
+if 'logs_bytes' not in st.session_state and os.path.exists(LOGS_SAVED):
+    with open(LOGS_SAVED, 'rb') as f:
+        st.session_state['logs_bytes'] = f.read()
+    with open(META_LOGS, 'r') as f:
+        st.session_state['logs_name'] = f.read().strip()
+
+if 'tasks_bytes' not in st.session_state and os.path.exists(TASKS_SAVED):
+    with open(TASKS_SAVED, 'rb') as f:
+        st.session_state['tasks_bytes'] = f.read()
+    with open(META_TASKS, 'r') as f:
+        st.session_state['tasks_name'] = f.read().strip()
 
 logs_ready  = 'logs_bytes'  in st.session_state
 tasks_ready = 'tasks_bytes' in st.session_state
 
 if logs_ready:
-    st.sidebar.success(f"✅ {st.session_state['logs_name']}")
+    mtime = os.path.getmtime(LOGS_SAVED) if os.path.exists(LOGS_SAVED) else None
+    mtime_str = time.strftime(' (%d %b %H:%M)', time.localtime(mtime)) if mtime else ''
+    st.sidebar.success(f"✅ {st.session_state['logs_name']}{mtime_str}")
 if tasks_ready:
-    st.sidebar.success(f"✅ {st.session_state['tasks_name']}")
+    mtime = os.path.getmtime(TASKS_SAVED) if os.path.exists(TASKS_SAVED) else None
+    mtime_str = time.strftime(' (%d %b %H:%M)', time.localtime(mtime)) if mtime else ''
+    st.sidebar.success(f"✅ {st.session_state['tasks_name']}{mtime_str}")
 
 if not logs_ready or not tasks_ready:
     st.markdown("## Ops Team Dashboard")
@@ -236,10 +272,14 @@ table = daily[['User Name','Area','shift_date','checkin','checkout','shift_hours
 
 table['shift_date'] = pd.to_datetime(table['shift_date']).dt.strftime('%d %B %A')
 table['checkin']    = pd.to_datetime(table['checkin'],  errors='coerce').dt.strftime('%d %b %H:%M').fillna('-')
+# Track which rows have no checkout before formatting
+no_checkout = table['checkout'].isna()
 table['checkout']   = pd.to_datetime(table['checkout'], errors='coerce').dt.strftime('%d %b %H:%M').fillna('Missed')
 table['shift_hours'] = table['shift_hours'].apply(
     lambda x: int(x) if pd.notna(x) and float(x) == int(float(x)) else round(float(x), 1) if pd.notna(x) else 'Missed'
 )
+# When checkout is missed, last action → checkout gap is meaningless
+table.loc[no_checkout, 'last_to_checkout_min'] = None
 
 table.columns = ['Agent','Area','Shift Day','Check In','Check Out','Shift Hrs',
                  'Checkin to 1st Action (min)','Last Action to Checkout (min)',
