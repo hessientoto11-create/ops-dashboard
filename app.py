@@ -294,7 +294,7 @@ def color_success(val):
         if val > 0:   return 'color: #f85149; font-weight: bold'
     return ''
 
-st.dataframe(table.style.applymap(color_success, subset=['Success %']), use_container_width=True, height=430)
+st.dataframe(table.style.applymap(color_success, subset=['Success %']), use_container_width=True, height=430, column_config={"Agent": st.column_config.TextColumn("Agent", pinned=True)})
 
 # TASK OUTCOMES BY AGENT
 st.markdown('<div class="section-title">Task Outcomes by Agent</div>', unsafe_allow_html=True)
