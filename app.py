@@ -34,15 +34,33 @@ uploaded_logs  = st.sidebar.file_uploader("User Logs (.xlsx)",  type=["xlsx"], k
 uploaded_tasks = st.sidebar.file_uploader("Ops Tasks (.xlsx)", type=["xlsx"], key="tasks")
 st.sidebar.markdown("---")
 
-if uploaded_logs is None or uploaded_tasks is None:
+# Persistent storage: save uploaded bytes in session_state so they survive reruns
+if uploaded_logs is not None:
+    st.session_state['logs_bytes']  = uploaded_logs.read()
+    st.session_state['logs_name']   = uploaded_logs.name
+if uploaded_tasks is not None:
+    st.session_state['tasks_bytes'] = uploaded_tasks.read()
+    st.session_state['tasks_name']  = uploaded_tasks.name
+
+logs_ready  = 'logs_bytes'  in st.session_state
+tasks_ready = 'tasks_bytes' in st.session_state
+
+if logs_ready:
+    st.sidebar.success(f"✅ {st.session_state['logs_name']}")
+if tasks_ready:
+    st.sidebar.success(f"✅ {st.session_state['tasks_name']}")
+
+if not logs_ready or not tasks_ready:
     st.markdown("## Ops Team Dashboard")
     st.info("Upload both User Logs.xlsx and Ops Tasks.xlsx from the sidebar to load the dashboard.")
     st.stop()
 
+
 @st.cache_data
-def load_and_build(logs_file, tasks_file):
-    logs  = pd.read_excel(logs_file)
-    tasks = pd.read_excel(tasks_file)
+def load_and_build(logs_bytes, tasks_bytes):
+    import io
+    logs  = pd.read_excel(io.BytesIO(logs_bytes))
+    tasks = pd.read_excel(io.BytesIO(tasks_bytes))
 
     logs['User Name']  = logs['User Name'].str.strip()
     tasks['User Name'] = tasks['User Name'].str.strip()
@@ -90,6 +108,17 @@ def load_and_build(logs_file, tasks_file):
     swap_logs['shift_date'] = swap_logs.apply(lambda r: find_shift(r['User Name'], r['ts']), axis=1)
     swaps_df = swap_logs.dropna(subset=['shift_date']).groupby(['User Name','shift_date']).size().reset_index(name='Swaps')
 
+    # Activate / Deactivate — dedup: same agent + same action + same vehicle + same hour = count as 1
+    act_dfs_list = []
+    for action, col_name in [('ACTIVATED_VEHICLE','Activated'), ('DEACTIVATED_VEHICLE','Deactivated')]:
+        act_logs = logs[logs['Action'] == action][['User Name','Vehicle','ts']].copy()
+        act_logs['hour_bucket'] = act_logs['ts'].dt.floor('h')
+        act_logs = act_logs.drop_duplicates(subset=['User Name','Vehicle','hour_bucket'])
+        act_logs['shift_date'] = act_logs.apply(lambda r: find_shift(r['User Name'], r['ts']), axis=1)
+        act_df = act_logs.dropna(subset=['shift_date']).groupby(['User Name','shift_date']).size().reset_index(name=col_name)
+        act_dfs_list.append(act_df)
+    act_dfs = act_dfs_list[0].merge(act_dfs_list[1], on=['User Name','shift_date'], how='outer')
+
     tasks_s    = tasks.dropna(subset=['shift_date'])
     # Combine ALL log actions (excl checkin/checkout) + ALL task timestamps
     # to get the true first and last action per session
@@ -130,19 +159,20 @@ def load_and_build(logs_file, tasks_file):
     daily = daily.merge(first_task, on=['User Name','shift_date'], how='left')
     daily = daily.merge(last_task,  on=['User Name','shift_date'], how='left')
     daily = daily.merge(swaps_df,   on=['User Name','shift_date'], how='left')
+    daily = daily.merge(act_dfs,    on=['User Name','shift_date'], how='left')
     daily = daily.merge(area_map,   on='User Name',                how='left')
 
     daily['checkin_to_first_task_min'] = ((daily['first_task_ts'] - daily['checkin']).dt.total_seconds() / 60).round(0).astype('Int64')
     daily['last_task_to_checkout_min'] = ((daily['checkout'] - daily['last_task_ts']).dt.total_seconds() / 60).round(0).astype('Int64')
 
-    for col in ['Success','Failed','closed','Total','Swaps']:
+    for col in ['Success','Failed','closed','Total','Swaps','Activated','Deactivated']:
         if col in daily.columns:
             daily[col] = daily[col].fillna(0).astype(int)
 
     daily = daily[daily['Total'] > 0].copy()
     return daily, tasks, area_map
 
-daily_all, tasks_raw, area_map = load_and_build(uploaded_logs, uploaded_tasks)
+daily_all, tasks_raw, area_map = load_and_build(st.session_state['logs_bytes'], st.session_state['tasks_bytes'])
 
 def fmt_shift_date(d):
     if isinstance(d, str):
@@ -177,15 +207,19 @@ total_closed  = int(daily['closed'].sum())
 total_tasks   = total_success + total_failed + total_closed
 success_rate  = int(round(total_success / total_tasks * 100)) if total_tasks > 0 else 0
 total_swaps   = int(daily['Swaps'].sum())
+total_activated   = int(daily['Activated'].sum()) if 'Activated' in daily.columns else 0
+total_deactivated = int(daily['Deactivated'].sum()) if 'Deactivated' in daily.columns else 0
 
-c1,c2,c3,c4,c5,c6,c7 = st.columns(7)
-c1.metric("Agents",    total_agents)
-c2.metric("Success",   total_success)
-c3.metric("Failed",    total_failed)
-c4.metric("Closed",    total_closed)
-c5.metric("Total Tasks", total_tasks)
-c6.metric("Success %", f"{success_rate}%")
-c7.metric("Swaps",     total_swaps)
+c1,c2,c3,c4,c5,c6,c7,c8,c9 = st.columns(9)
+c1.metric("Agents",       total_agents)
+c2.metric("Success",      total_success)
+c3.metric("Failed",       total_failed)
+c4.metric("Closed",       total_closed)
+c5.metric("Total Tasks",  total_tasks)
+c6.metric("Success %",    f"{success_rate}%")
+c7.metric("Swaps",        total_swaps)
+c8.metric("Activated",    total_activated)
+c9.metric("Deactivated",  total_deactivated)
 st.markdown("---")
 
 # AGENT TABLE
@@ -204,7 +238,7 @@ table['shift_hours'] = table['shift_hours'].apply(
 
 table.columns = ['Agent','Area','Shift Day','Check In','Check Out','Shift Hrs',
                  'Checkin to 1st Action (min)','Last Action to Checkout (min)',
-                 'Success','Failed','Closed','Total','Success %','Swaps']
+                 'Success','Failed','Closed','Total','Success %','Swaps','Activated','Deactivated']
 table = table.sort_values(['Shift Day','Area','Agent']).reset_index(drop=True)
 
 def color_success(val):
