@@ -29,30 +29,52 @@ st.markdown("""
 # SIDEBAR
 st.sidebar.title("Ops Dashboard")
 st.sidebar.markdown("---")
-st.sidebar.markdown("### Upload Data")
-uploaded_logs  = st.sidebar.file_uploader("User Logs (.xlsx)",  type=["xlsx"], key="logs")
-uploaded_tasks = st.sidebar.file_uploader("Ops Tasks (.xlsx)", type=["xlsx"], key="tasks")
-st.sidebar.markdown("---")
 
-# Persistent storage: save uploaded bytes in session_state so they survive reruns
-if uploaded_logs is not None:
-    st.session_state['logs_bytes']  = uploaded_logs.read()
-    st.session_state['logs_name']   = uploaded_logs.name
-if uploaded_tasks is not None:
-    st.session_state['tasks_bytes'] = uploaded_tasks.read()
-    st.session_state['tasks_name']  = uploaded_tasks.name
+# ── FILE PATHS (edit these to match your server paths) ────────────────────────
+LOGS_PATH  = "User Logs.xlsx"
+TASKS_PATH = "Ops Tasks.xlsx"
+
+import os, time
+
+def get_file_mtime(path):
+    try:    return os.path.getmtime(path)
+    except: return None
+
+def load_file_bytes(path):
+    with open(path, 'rb') as f:
+        return f.read()
+
+# Show last loaded time if available
+if 'last_loaded' in st.session_state:
+    st.sidebar.caption(f"Last loaded: {st.session_state['last_loaded']}")
+
+# Load button
+if st.sidebar.button("🔄  Load / Refresh Data", use_container_width=True):
+    missing = []
+    if not os.path.exists(LOGS_PATH):  missing.append(LOGS_PATH)
+    if not os.path.exists(TASKS_PATH): missing.append(TASKS_PATH)
+    if missing:
+        st.sidebar.error(f"File(s) not found:\n" + "\n".join(missing))
+    else:
+        st.session_state['logs_bytes']  = load_file_bytes(LOGS_PATH)
+        st.session_state['tasks_bytes'] = load_file_bytes(TASKS_PATH)
+        st.session_state['last_loaded'] = time.strftime('%Y-%m-%d %H:%M:%S')
+        st.cache_data.clear()
+        st.rerun()
+
+st.sidebar.markdown("---")
 
 logs_ready  = 'logs_bytes'  in st.session_state
 tasks_ready = 'tasks_bytes' in st.session_state
 
-if logs_ready:
-    st.sidebar.success(f"✅ {st.session_state['logs_name']}")
-if tasks_ready:
-    st.sidebar.success(f"✅ {st.session_state['tasks_name']}")
+if logs_ready and tasks_ready:
+    st.sidebar.success("✅ Data loaded")
+else:
+    st.sidebar.info("Click the button above to load data.")
 
 if not logs_ready or not tasks_ready:
     st.markdown("## Ops Team Dashboard")
-    st.info("Upload both User Logs.xlsx and Ops Tasks.xlsx from the sidebar to load the dashboard.")
+    st.info("👈 Click **Load / Refresh Data** in the sidebar to load the dashboard.")
     st.stop()
 
 
@@ -162,8 +184,8 @@ def load_and_build(logs_bytes, tasks_bytes):
     daily = daily.merge(act_dfs,    on=['User Name','shift_date'], how='left')
     daily = daily.merge(area_map,   on='User Name',                how='left')
 
-    daily['checkin_to_first_task_min'] = ((daily['first_task_ts'] - daily['checkin']).dt.total_seconds() / 60).round(0).astype('Int64')
-    daily['last_task_to_checkout_min'] = ((daily['checkout'] - daily['last_task_ts']).dt.total_seconds() / 60).round(0).astype('Int64')
+    daily['checkin_to_first_min'] = ((daily['first_task_ts'] - daily['checkin']).dt.total_seconds() / 60).round(0).astype('Int64')
+    daily['last_to_checkout_min'] = ((daily['checkout'] - daily['last_task_ts']).dt.total_seconds() / 60).round(0).astype('Int64')
 
     for col in ['Success','Failed','closed','Total','Swaps','Activated','Deactivated']:
         if col in daily.columns:
@@ -225,9 +247,13 @@ st.markdown("---")
 # AGENT TABLE
 st.markdown('<div class="section-title">Daily Agent Breakdown</div>', unsafe_allow_html=True)
 
+# Ensure Activated/Deactivated exist
+if 'Activated' not in daily.columns:   daily['Activated']   = 0
+if 'Deactivated' not in daily.columns: daily['Deactivated'] = 0
 table = daily[['User Name','Area','shift_date','checkin','checkout','shift_hours',
-               'checkin_to_first_task_min','last_task_to_checkout_min',
-               'Success','Failed','closed','Total','Success %','Swaps']].copy()
+               'checkin_to_first_min','last_to_checkout_min',
+               'Success','Failed','closed','Total','Success %','Swaps',
+               'Activated','Deactivated']].copy()
 
 table['shift_date'] = pd.to_datetime(table['shift_date']).dt.strftime('%d %B %A')
 table['checkin']    = pd.to_datetime(table['checkin'],  errors='coerce').dt.strftime('%d %b %H:%M').fillna('-')
@@ -271,15 +297,15 @@ col_left, col_right = st.columns(2)
 
 with col_left:
     st.markdown('<div class="section-title">Checkin to First Action (avg min)</div>', unsafe_allow_html=True)
-    gap_in = (daily[daily['checkin_to_first_task_min'] > 0]
-        .groupby('User Name')['checkin_to_first_task_min'].mean().round(0).astype(int).reset_index()
-        .sort_values('checkin_to_first_task_min', ascending=True))
+    gap_in = (daily[daily['checkin_to_first_min'] > 0]
+        .groupby('User Name')['checkin_to_first_min'].mean().round(0).astype(int).reset_index()
+        .sort_values('checkin_to_first_min', ascending=True))
     if len(gap_in) > 0:
-        fig_gin = px.bar(gap_in, x='checkin_to_first_task_min',
+        fig_gin = px.bar(gap_in, x='checkin_to_first_min',
             y=gap_in['User Name'].apply(lambda n: ' '.join(str(n).split()[:2])),
-            orientation='h', color='checkin_to_first_task_min',
+            orientation='h', color='checkin_to_first_min',
             color_continuous_scale=['#3fb950','#e3b341','#f85149'],
-            text='checkin_to_first_task_min', labels={'checkin_to_first_task_min':'Minutes','y':''})
+            text='checkin_to_first_min', labels={'checkin_to_first_min':'Minutes','y':''})
         fig_gin.update_traces(textposition='outside')
         fig_gin.update_layout(height=430, paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e',
             font_color='#e6edf3', coloraxis_showscale=False,
@@ -289,15 +315,15 @@ with col_left:
 
 with col_right:
     st.markdown('<div class="section-title">Last Action to Checkout (avg min)</div>', unsafe_allow_html=True)
-    gap_out = (daily[daily['last_task_to_checkout_min'] > 0]
-        .groupby('User Name')['last_task_to_checkout_min'].mean().round(0).astype(int).reset_index()
-        .sort_values('last_task_to_checkout_min', ascending=True))
+    gap_out = (daily[daily['last_to_checkout_min'] > 0]
+        .groupby('User Name')['last_to_checkout_min'].mean().round(0).astype(int).reset_index()
+        .sort_values('last_to_checkout_min', ascending=True))
     if len(gap_out) > 0:
-        fig_gout = px.bar(gap_out, x='last_task_to_checkout_min',
+        fig_gout = px.bar(gap_out, x='last_to_checkout_min',
             y=gap_out['User Name'].apply(lambda n: ' '.join(str(n).split()[:2])),
-            orientation='h', color='last_task_to_checkout_min',
+            orientation='h', color='last_to_checkout_min',
             color_continuous_scale=['#3fb950','#e3b341','#f85149'],
-            text='last_task_to_checkout_min', labels={'last_task_to_checkout_min':'Minutes','y':''})
+            text='last_to_checkout_min', labels={'last_to_checkout_min':'Minutes','y':''})
         fig_gout.update_traces(textposition='outside')
         fig_gout.update_layout(height=430, paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e',
             font_color='#e6edf3', coloraxis_showscale=False,
