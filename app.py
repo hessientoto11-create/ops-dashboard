@@ -222,19 +222,20 @@ shift_date_map     = {fmt_shift_date(d): d for d in shift_dates_raw}
 
 all_areas = sorted(daily_all['Area'].dropna().unique().tolist())
 sel_area  = st.sidebar.selectbox("Area",      ["All Areas"] + all_areas)
-sel_date  = st.sidebar.selectbox("Shift Day", shift_date_options)
+sel_date  = st.sidebar.multiselect("Shift Day", shift_date_options[1:], default=[])
 st.sidebar.markdown("---")
 st.sidebar.caption("Shift = checkin to checkout. Night shifts grouped under checkin day.")
 
 daily = daily_all.copy()
 if sel_area != "All Areas":
     daily = daily[daily['Area'] == sel_area]
-if sel_date != "All Shifts":
-    sd    = shift_date_map[sel_date]
-    daily = daily[daily['shift_date'] == sd]
+if sel_date:
+    sds   = [shift_date_map[d] for d in sel_date]
+    daily = daily[daily['shift_date'].isin(sds)]
 
 # KPI CARDS
-st.markdown(f"## Ops Performance  {sel_area}  |  {sel_date}")
+date_label = ", ".join(sel_date) if sel_date else "All Shifts"
+st.markdown(f"## Ops Performance  {sel_area}  |  {date_label}")
 st.markdown("---")
 
 total_agents  = daily['User Name'].nunique()
