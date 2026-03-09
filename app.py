@@ -113,13 +113,25 @@ def load_and_build(logs_bytes, tasks_bytes):
     ci = logs[logs['Action'] == 'OPS_USER_CHECKIN'][['User Name','ts']].sort_values(['User Name','ts'])
     co = logs[logs['Action'] == 'OPS_USER_CHECKOUT'][['User Name','ts']].sort_values(['User Name','ts'])
 
+    # Pair each checkin with the first checkout that is >= 6h after it
+    # and comes before the next checkin. If no valid checkout exists → Missed.
+    MIN_SHIFT_HOURS = 6
     sessions = []
     for agent in ci['User Name'].unique():
-        a_ci = ci[ci['User Name'] == agent]['ts'].tolist()
-        a_co = co[co['User Name'] == agent]['ts'].tolist()
-        for cin in a_ci:
-            after = [c for c in a_co if c > cin]
-            cout  = after[0] if after else None
+        a_ci = ci[ci['User Name'] == agent]['ts'].sort_values().tolist()
+        a_co = co[co['User Name'] == agent]['ts'].sort_values().tolist()
+        used_checkouts = set()
+        for i, cin in enumerate(a_ci):
+            next_cin = a_ci[i+1] if i+1 < len(a_ci) else None
+            cout = None
+            for j, co_ts in enumerate(a_co):
+                if j in used_checkouts: continue
+                hours_after = (co_ts - cin).total_seconds() / 3600
+                if hours_after >= MIN_SHIFT_HOURS:
+                    if next_cin is None or co_ts <= next_cin:
+                        cout = co_ts
+                        used_checkouts.add(j)
+                        break
             sessions.append({'User Name': agent, 'checkin': cin, 'checkout': cout, 'shift_date': cin.date()})
 
     sessions_df = pd.DataFrame(sessions)
