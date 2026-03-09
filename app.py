@@ -29,52 +29,31 @@ st.markdown("""
 # SIDEBAR
 st.sidebar.title("Ops Dashboard")
 st.sidebar.markdown("---")
-
-# ── FILE PATHS (edit these to match your server paths) ────────────────────────
-LOGS_PATH  = "User Logs.xlsx"
-TASKS_PATH = "Ops Tasks.xlsx"
-
-import os, time
-
-def get_file_mtime(path):
-    try:    return os.path.getmtime(path)
-    except: return None
-
-def load_file_bytes(path):
-    with open(path, 'rb') as f:
-        return f.read()
-
-# Show last loaded time if available
-if 'last_loaded' in st.session_state:
-    st.sidebar.caption(f"Last loaded: {st.session_state['last_loaded']}")
-
-# Load button
-if st.sidebar.button("🔄  Load / Refresh Data", use_container_width=True):
-    missing = []
-    if not os.path.exists(LOGS_PATH):  missing.append(LOGS_PATH)
-    if not os.path.exists(TASKS_PATH): missing.append(TASKS_PATH)
-    if missing:
-        st.sidebar.error(f"File(s) not found:\n" + "\n".join(missing))
-    else:
-        st.session_state['logs_bytes']  = load_file_bytes(LOGS_PATH)
-        st.session_state['tasks_bytes'] = load_file_bytes(TASKS_PATH)
-        st.session_state['last_loaded'] = time.strftime('%Y-%m-%d %H:%M:%S')
-        st.cache_data.clear()
-        st.rerun()
-
+st.sidebar.markdown("### 📂 Upload Data")
+uploaded_logs  = st.sidebar.file_uploader("User Logs (.xlsx)",  type=["xlsx"], key="logs")
+uploaded_tasks = st.sidebar.file_uploader("Ops Tasks (.xlsx)", type=["xlsx"], key="tasks")
 st.sidebar.markdown("---")
+
+if uploaded_logs is not None:
+    st.session_state['logs_bytes'] = uploaded_logs.read()
+    st.session_state['logs_name']  = uploaded_logs.name
+    st.cache_data.clear()
+if uploaded_tasks is not None:
+    st.session_state['tasks_bytes'] = uploaded_tasks.read()
+    st.session_state['tasks_name']  = uploaded_tasks.name
+    st.cache_data.clear()
 
 logs_ready  = 'logs_bytes'  in st.session_state
 tasks_ready = 'tasks_bytes' in st.session_state
 
-if logs_ready and tasks_ready:
-    st.sidebar.success("✅ Data loaded")
-else:
-    st.sidebar.info("Click the button above to load data.")
+if logs_ready:
+    st.sidebar.success(f"✅ {st.session_state['logs_name']}")
+if tasks_ready:
+    st.sidebar.success(f"✅ {st.session_state['tasks_name']}")
 
 if not logs_ready or not tasks_ready:
     st.markdown("## Ops Team Dashboard")
-    st.info("👈 Click **Load / Refresh Data** in the sidebar to load the dashboard.")
+    st.info("👈 Upload both **User Logs.xlsx** and **Ops Tasks.xlsx** from the sidebar to load the dashboard.")
     st.stop()
 
 
