@@ -417,17 +417,62 @@ with col4:
     area_cols_avail = [c for c in ['Success','Failed','closed','Other'] if c in daily.columns]
     area_agg = daily.groupby('Area')[area_cols_avail].sum().reset_index()
     area_agg = area_agg[area_agg['Area'].notna() & (area_agg['Area'] != '')]
-    area_melted = area_agg.melt(id_vars='Area', value_vars=['Success','Failed','closed'], var_name='Status', value_name='count')
+    area_melted = area_agg.melt(id_vars='Area', value_vars=area_cols_avail, var_name='Status', value_name='count')
     area_melted = area_melted[area_melted['count'] > 0]
     if len(area_melted) > 0:
         fig_area = px.bar(area_melted, x='Area', y='count', color='Status',
             color_discrete_map={'Success':'#3fb950','Failed':'#f85149','closed':'#8b949e','Other':'#58a6ff'},
-            barmode='stack', labels={'count':'Tasks'})
+            barmode='stack', labels={'count':'Tasks'}, text_auto=True)
+        fig_area.update_traces(textposition='inside', textfont_size=11)
         fig_area.update_layout(height=380, paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e',
             font_color='#e6edf3', legend=dict(bgcolor='#1a1d2e'),
             xaxis=dict(gridcolor='#21262d'), yaxis=dict(gridcolor='#21262d', tickformat='d'),
             margin=dict(t=10, b=10))
         st.plotly_chart(fig_area, use_container_width=True)
+
+# TASK OUTCOMES BY DATE
+st.markdown('<div class="section-title">Task Outcomes by Date</div>', unsafe_allow_html=True)
+date_cols_avail = [c for c in ['Success','Failed','closed','Other'] if c in daily.columns]
+date_agg = daily.copy()
+date_agg['shift_date_fmt'] = pd.to_datetime(date_agg['shift_date']).dt.strftime('%d %b')
+date_agg = date_agg.groupby('shift_date_fmt')[date_cols_avail + ['Total']].sum().reset_index()
+# Sort by actual date
+date_agg['_sort'] = pd.to_datetime(date_agg['shift_date_fmt'] + ' 2026', format='%d %b %Y', errors='coerce')
+date_agg = date_agg.sort_values('_sort').drop(columns='_sort')
+
+date_melted = date_agg.melt(id_vars='shift_date_fmt', value_vars=date_cols_avail, var_name='Status', value_name='count')
+date_melted = date_melted[date_melted['count'] > 0]
+
+if len(date_melted) > 0:
+    # Add Total line on secondary axis
+    fig_date = go.Figure()
+    colors = {'Success':'#3fb950','Failed':'#f85149','closed':'#8b949e','Other':'#58a6ff'}
+    for status in date_cols_avail:
+        sub = date_melted[date_melted['Status']==status]
+        if len(sub) == 0: continue
+        fig_date.add_trace(go.Bar(
+            name=status.capitalize() if status != 'closed' else 'Closed',
+            x=sub['shift_date_fmt'], y=sub['count'],
+            marker_color=colors.get(status,'#8b949e'),
+            text=sub['count'], textposition='inside', textfont_size=11
+        ))
+    fig_date.add_trace(go.Scatter(
+        name='Total', x=date_agg['shift_date_fmt'], y=date_agg['Total'],
+        mode='lines+markers+text', text=date_agg['Total'],
+        textposition='top center', textfont=dict(size=12, color='#f0e68c'),
+        line=dict(color='#f0e68c', width=2), marker=dict(size=7),
+        yaxis='y2'
+    ))
+    fig_date.update_layout(
+        barmode='stack', height=420,
+        paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e', font_color='#e6edf3',
+        legend=dict(bgcolor='#1a1d2e', orientation='h', y=1.08),
+        xaxis=dict(gridcolor='#21262d', title=''),
+        yaxis=dict(gridcolor='#21262d', tickformat='d', title='Tasks'),
+        yaxis2=dict(overlaying='y', side='right', showgrid=False, title='Total', tickformat='d'),
+        margin=dict(t=40, b=10)
+    )
+    st.plotly_chart(fig_date, use_container_width=True)
 
 # SHIFT HOURS
 st.markdown('<div class="section-title">Shift Hours per Agent</div>', unsafe_allow_html=True)
