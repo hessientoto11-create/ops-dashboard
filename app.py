@@ -1,4 +1,5 @@
 import streamlit as st
+import io
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -375,159 +376,415 @@ def color_success(val):
 
 st.dataframe(table.style.applymap(color_success, subset=['Success %']), use_container_width=True, height=430, column_config={"Agent": st.column_config.TextColumn("Agent", pinned=True)})
 
-# TASK OUTCOMES BY AGENT
-st.markdown('<div class="section-title">Task Outcomes by Agent</div>', unsafe_allow_html=True)
-agg_cols = [c for c in ['Success','Failed','closed','Other','Total'] if c in daily.columns]
-agg    = daily.groupby('User Name')[agg_cols].sum().reset_index()
-agg    = agg[agg['Total'] > 0].sort_values('Total', ascending=False).head(25)
-labels = agg['User Name'].apply(lambda n: ' '.join(str(n).split()[:2]))
 
-fig_bar = go.Figure()
-fig_bar.add_trace(go.Bar(name='Success', x=labels, y=agg['Success'], marker_color='#3fb950'))
-fig_bar.add_trace(go.Bar(name='Failed',  x=labels, y=agg['Failed'],  marker_color='#f85149'))
-fig_bar.add_trace(go.Bar(name='Closed',  x=labels, y=agg['closed'],  marker_color='#8b949e'))
-if 'Other' in agg.columns and int(agg['Other'].sum()) > 0:
-    fig_bar.add_trace(go.Bar(name='Other', x=labels, y=agg['Other'], marker_color='#58a6ff'))
-fig_bar.update_layout(barmode='stack', height=400, paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e',
-    font_color='#e6edf3', legend=dict(bgcolor='#1a1d2e'),
-    xaxis=dict(tickangle=-35, gridcolor='#21262d'), yaxis=dict(gridcolor='#21262d', tickformat='d'),
-    margin=dict(t=20, b=10))
-st.plotly_chart(fig_bar, use_container_width=True)
+# ── TABS ──────────────────────────────────────────────────────────────────────
+tab1, tab2, tab3, tab4 = st.tabs([
+    "👤 FT Daily Performance",
+    "📋 Ops Tasks",
+    "📜 User Logs",
+    "🗺️ Areas"
+])
 
-# GAP CHARTS
-col_left, col_right = st.columns(2)
-
-with col_left:
-    st.markdown('<div class="section-title">Checkin to First Action (avg min)</div>', unsafe_allow_html=True)
-    gap_in = (daily[daily['checkin_to_first_min'] > 0]
-        .groupby('User Name')['checkin_to_first_min'].mean().round(0).astype(int).reset_index()
-        .sort_values('checkin_to_first_min', ascending=True))
-    if len(gap_in) > 0:
-        fig_gin = px.bar(gap_in, x='checkin_to_first_min',
-            y=gap_in['User Name'].apply(lambda n: ' '.join(str(n).split()[:2])),
-            orientation='h', color='checkin_to_first_min',
-            color_continuous_scale=['#3fb950','#e3b341','#f85149'],
-            text='checkin_to_first_min', labels={'checkin_to_first_min':'Minutes','y':''})
-        fig_gin.update_traces(textposition='outside')
-        fig_gin.update_layout(height=430, paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e',
-            font_color='#e6edf3', coloraxis_showscale=False,
-            xaxis=dict(gridcolor='#21262d', tickformat='d'), yaxis=dict(gridcolor='#21262d'),
-            margin=dict(t=10, b=10))
-        st.plotly_chart(fig_gin, use_container_width=True)
-
-with col_right:
-    st.markdown('<div class="section-title">Last Action to Checkout (avg min)</div>', unsafe_allow_html=True)
-    gap_out = (daily[daily['last_to_checkout_min'] > 0]
-        .groupby('User Name')['last_to_checkout_min'].mean().round(0).astype(int).reset_index()
-        .sort_values('last_to_checkout_min', ascending=True))
-    if len(gap_out) > 0:
-        fig_gout = px.bar(gap_out, x='last_to_checkout_min',
-            y=gap_out['User Name'].apply(lambda n: ' '.join(str(n).split()[:2])),
-            orientation='h', color='last_to_checkout_min',
-            color_continuous_scale=['#3fb950','#e3b341','#f85149'],
-            text='last_to_checkout_min', labels={'last_to_checkout_min':'Minutes','y':''})
-        fig_gout.update_traces(textposition='outside')
-        fig_gout.update_layout(height=430, paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e',
-            font_color='#e6edf3', coloraxis_showscale=False,
-            xaxis=dict(gridcolor='#21262d', tickformat='d'), yaxis=dict(gridcolor='#21262d'),
-            margin=dict(t=10, b=10))
-        st.plotly_chart(fig_gout, use_container_width=True)
-
-# SWAPS & AREA
-col3, col4 = st.columns(2)
-
-with col3:
-    st.markdown('<div class="section-title">Battery Swaps per Agent</div>', unsafe_allow_html=True)
-    swap_agg = daily.groupby('User Name')['Swaps'].sum().reset_index()
-    swap_agg = swap_agg[swap_agg['Swaps'] > 0].sort_values('Swaps', ascending=False).head(20)
-    if len(swap_agg) > 0:
-        fig_swaps = px.bar(swap_agg,
-            x=swap_agg['User Name'].apply(lambda n: ' '.join(str(n).split()[:2])),
-            y='Swaps', color='Swaps', color_continuous_scale=['#1a1d2e','#39d353'],
-            text='Swaps', labels={'x':'','Swaps':'Swaps'})
-        fig_swaps.update_traces(textposition='outside')
-        fig_swaps.update_layout(height=380, paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e',
-            font_color='#e6edf3', coloraxis_showscale=False,
-            xaxis=dict(tickangle=-35, gridcolor='#21262d'), yaxis=dict(gridcolor='#21262d', tickformat='d'),
-            margin=dict(t=10, b=10))
-        st.plotly_chart(fig_swaps, use_container_width=True)
-
-with col4:
-    st.markdown('<div class="section-title">Task Outcomes by Area</div>', unsafe_allow_html=True)
-    area_cols_avail = [c for c in ['Success','Failed','closed','Other'] if c in daily.columns]
-    area_agg = daily.groupby('Area')[area_cols_avail].sum().reset_index()
-    area_agg = area_agg[area_agg['Area'].notna() & (area_agg['Area'] != '')]
-    area_melted = area_agg.melt(id_vars='Area', value_vars=area_cols_avail, var_name='Status', value_name='count')
-    area_melted = area_melted[area_melted['count'] > 0]
-    if len(area_melted) > 0:
-        fig_area = px.bar(area_melted, x='Area', y='count', color='Status',
-            color_discrete_map={'Success':'#3fb950','Failed':'#f85149','closed':'#8b949e','Other':'#58a6ff'},
-            barmode='stack', labels={'count':'Tasks'}, text_auto=True)
-        fig_area.update_traces(textposition='inside', textfont_size=11)
-        fig_area.update_layout(height=380, paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e',
-            font_color='#e6edf3', legend=dict(bgcolor='#1a1d2e'),
-            xaxis=dict(gridcolor='#21262d'), yaxis=dict(gridcolor='#21262d', tickformat='d'),
-            margin=dict(t=10, b=10))
-        st.plotly_chart(fig_area, use_container_width=True)
-
-# TASK OUTCOMES BY DATE
-st.markdown('<div class="section-title">Task Outcomes by Date</div>', unsafe_allow_html=True)
-date_cols_avail = [c for c in ['Success','Failed','closed','Other'] if c in daily.columns]
-date_agg = daily.copy()
-date_agg['shift_date'] = pd.to_datetime(date_agg['shift_date'])
-date_agg = date_agg.groupby('shift_date')[date_cols_avail + ['Total']].sum().reset_index()
-date_agg = date_agg.sort_values('shift_date')
-date_agg['shift_date_fmt'] = date_agg['shift_date'].dt.strftime('%d %b %Y')
-
-date_melted = date_agg.melt(id_vars=['shift_date','shift_date_fmt'], value_vars=date_cols_avail, var_name='Status', value_name='count')
-date_melted = date_melted[date_melted['count'] > 0]
-
-if len(date_melted) > 0:
-    # Add Total line on secondary axis
-    fig_date = go.Figure()
-    colors = {'Success':'#3fb950','Failed':'#f85149','closed':'#8b949e','Other':'#58a6ff'}
-    for status in date_cols_avail:
-        sub = date_melted[date_melted['Status']==status]
-        if len(sub) == 0: continue
-        fig_date.add_trace(go.Bar(
-            name=status.capitalize() if status != 'closed' else 'Closed',
-            x=sub['shift_date_fmt'], y=sub['count'],
-            marker_color=colors.get(status,'#8b949e'),
-            text=sub['count'], textposition='inside', textfont_size=11
-        ))
-    fig_date.add_trace(go.Scatter(
-        name='Total', x=date_agg['shift_date_fmt'], y=date_agg['Total'],
-        mode='lines+markers+text', text=date_agg['Total'],
-        textposition='top center', textfont=dict(size=12, color='#f0e68c'),
-        line=dict(color='#f0e68c', width=2), marker=dict(size=7),
-        yaxis='y2'
-    ))
-    fig_date.update_layout(
-        barmode='stack', height=420,
-        paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e', font_color='#e6edf3',
-        legend=dict(bgcolor='#1a1d2e', orientation='h', y=1.08),
-        xaxis=dict(gridcolor='#21262d', title=''),
-        yaxis=dict(gridcolor='#21262d', tickformat='d', title='Tasks'),
-        yaxis2=dict(overlaying='y', side='right', showgrid=False, title='Total', tickformat='d'),
-        margin=dict(t=40, b=10)
+# ── helpers ───────────────────────────────────────────────────────────────────
+def dark_layout(fig, height=420, legend=True, xangle=-35):
+    fig.update_layout(
+        height=height, paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e',
+        font_color='#e6edf3',
+        legend=dict(bgcolor='#1a1d2e') if legend else dict(visible=False),
+        showlegend=legend,
+        xaxis=dict(tickangle=xangle, gridcolor='#21262d'),
+        yaxis=dict(gridcolor='#21262d', tickformat='d'),
+        margin=dict(t=30, b=10)
     )
-    st.plotly_chart(fig_date, use_container_width=True)
+    return fig
 
-# SHIFT HOURS
-st.markdown('<div class="section-title">Shift Hours per Agent</div>', unsafe_allow_html=True)
-shift_agg = daily.groupby('User Name')['shift_hours'].sum().reset_index()
-shift_agg = shift_agg[shift_agg['shift_hours'] > 0].sort_values('shift_hours', ascending=False)
-if len(shift_agg) > 0:
-    shift_agg['color'] = shift_agg['shift_hours'].apply(lambda h: '#3fb950' if h >= 8 else ('#e3b341' if h >= 4 else '#f85149'))
-    shift_agg['label'] = shift_agg['shift_hours'].apply(lambda h: str(int(h)) if float(h) == int(float(h)) else str(round(h, 1)))
-    fig_shift = px.bar(shift_agg,
-        x=shift_agg['User Name'].apply(lambda n: ' '.join(str(n).split()[:2])),
-        y='shift_hours', color='color', color_discrete_map='identity',
-        text='label', labels={'x':'','shift_hours':'Hours'})
-    fig_shift.update_traces(textposition='outside')
-    fig_shift.add_hline(y=8, line_dash='dash', line_color='#e3b341', opacity=0.6, annotation_text='8h target')
-    fig_shift.update_layout(height=340, paper_bgcolor='#0f1117', plot_bgcolor='#1a1d2e',
-        font_color='#e6edf3', showlegend=False,
-        xaxis=dict(tickangle=-35, gridcolor='#21262d'), yaxis=dict(gridcolor='#21262d', tickformat='d'),
-        margin=dict(t=10, b=10))
-    st.plotly_chart(fig_shift, use_container_width=True)
+def date_filter(key, df, date_col='shift_date'):
+    dates = sorted(df[date_col].dropna().unique())
+    fmt   = {d.strftime('%d %b %Y') if hasattr(d,'strftime') else str(d): d for d in dates}
+    sel   = st.multiselect("📅 Day", list(fmt.keys()), default=[], key=key)
+    if sel:
+        df = df[df[date_col].isin([fmt[s] for s in sel])]
+    return df
+
+def agent_filter(key, df, name_col='User Name'):
+    agents = sorted(df[name_col].dropna().unique().tolist())
+    sel    = st.multiselect("👤 Agent", agents, default=[], key=key)
+    if sel:
+        df = df[df[name_col].isin(sel)]
+    return df
+
+def area_filter(key, df, area_col='Area'):
+    areas = sorted(df[area_col].dropna().unique().tolist())
+    sel   = st.multiselect("🗺️ Area", areas, default=[], key=key)
+    if sel:
+        df = df[df[area_col].isin(sel)]
+    return df
+
+status_colors = {'Success':'#3fb950','Failed':'#f85149','closed':'#8b949e','Other':'#58a6ff'}
+logs_raw = pd.read_excel(io.BytesIO(st.session_state['logs_bytes']))
+logs_raw['User Name'] = logs_raw['User Name'].str.strip()
+logs_raw['ts']        = pd.to_datetime(logs_raw['Date (Local)'], errors='coerce')
+logs_raw['date']      = logs_raw['ts'].dt.date
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 1 — FT DAILY PERFORMANCE
+# ══════════════════════════════════════════════════════════════════════════════
+with tab1:
+    f1c1, f1c2, f1c3 = st.columns(3)
+    with f1c1:
+        t1_day = date_filter('t1_day', daily)
+    with f1c2:
+        t1_area = area_filter('t1_area', daily)
+    with f1c3:
+        t1_agents = agent_filter('t1_agent', daily)
+
+    d1 = daily.copy()
+    if t1_day:
+        dates_raw = sorted(daily['shift_date'].dropna().unique())
+        fmt_map   = {d.strftime('%d %b %Y'): d for d in dates_raw}
+        d1 = d1[d1['shift_date'].isin([fmt_map[s] for s in t1_day if s in fmt_map])]
+    if t1_area:
+        d1 = d1[d1['Area'].isin(t1_area)]
+    if t1_agents:
+        d1 = d1[d1['User Name'].isin(t1_agents)]
+
+    if len(d1) == 0:
+        st.info("No data for selected filters.")
+    else:
+        # 1a — Task outcomes by agent
+        st.markdown('<div class="section-title">Task Outcomes by Agent</div>', unsafe_allow_html=True)
+        status_cols_avail = [c for c in ['Success','Failed','closed','Other'] if c in d1.columns]
+        agg = d1.groupby('User Name')[status_cols_avail+['Total']].sum().reset_index()
+        agg = agg[agg['Total']>0].sort_values('Total',ascending=False).head(30)
+        labels = agg['User Name'].apply(lambda n: ' '.join(str(n).split()[:2]))
+        fig = go.Figure()
+        for s in status_cols_avail:
+            fig.add_trace(go.Bar(name=s, x=labels, y=agg[s], marker_color=status_colors.get(s,'#8b949e'),
+                text=agg[s], textposition='inside'))
+        fig.update_layout(barmode='stack')
+        st.plotly_chart(dark_layout(fig, 400), use_container_width=True)
+
+        # 1b — Checkin to first action | Last action to checkout
+        g1, g2 = st.columns(2)
+        with g1:
+            st.markdown('<div class="section-title">Checkin → First Action (avg min)</div>', unsafe_allow_html=True)
+            gap_in = (d1[d1['checkin_to_first_min']>0]
+                .groupby('User Name')['checkin_to_first_min'].mean().round(0).astype(int).reset_index()
+                .sort_values('checkin_to_first_min'))
+            gap_in['label'] = gap_in['User Name'].apply(lambda n: ' '.join(str(n).split()[:2]))
+            if len(gap_in):
+                fig = px.bar(gap_in, x='checkin_to_first_min', y='label', orientation='h',
+                    color='checkin_to_first_min', color_continuous_scale=['#3fb950','#e3b341','#f85149'],
+                    text='checkin_to_first_min', labels={'checkin_to_first_min':'Min','label':''})
+                fig.update_traces(textposition='outside')
+                st.plotly_chart(dark_layout(fig, 400, legend=False, xangle=0), use_container_width=True)
+        with g2:
+            st.markdown('<div class="section-title">Last Action → Checkout (avg min)</div>', unsafe_allow_html=True)
+            gap_out = (d1[d1['last_to_checkout_min']>0]
+                .groupby('User Name')['last_to_checkout_min'].mean().round(0).astype(int).reset_index()
+                .sort_values('last_to_checkout_min'))
+            gap_out['label'] = gap_out['User Name'].apply(lambda n: ' '.join(str(n).split()[:2]))
+            if len(gap_out):
+                fig = px.bar(gap_out, x='last_to_checkout_min', y='label', orientation='h',
+                    color='last_to_checkout_min', color_continuous_scale=['#3fb950','#e3b341','#f85149'],
+                    text='last_to_checkout_min', labels={'last_to_checkout_min':'Min','label':''})
+                fig.update_traces(textposition='outside')
+                st.plotly_chart(dark_layout(fig, 400, legend=False, xangle=0), use_container_width=True)
+
+        # 1c — Shift hours per agent
+        st.markdown('<div class="section-title">Shift Hours per Agent</div>', unsafe_allow_html=True)
+        sh = d1.groupby('User Name')['shift_hours'].sum().reset_index()
+        sh = sh[sh['shift_hours']>0].sort_values('shift_hours',ascending=False)
+        if len(sh):
+            sh['color'] = sh['shift_hours'].apply(lambda h: '#3fb950' if h>=8 else ('#e3b341' if h>=4 else '#f85149'))
+            sh['label'] = sh['shift_hours'].apply(lambda h: str(int(h)) if float(h)==int(float(h)) else str(round(h,1)))
+            sh['name']  = sh['User Name'].apply(lambda n: ' '.join(str(n).split()[:2]))
+            fig = px.bar(sh, x='name', y='shift_hours', color='color', color_discrete_map='identity',
+                text='label', labels={'name':'','shift_hours':'Hours'})
+            fig.update_traces(textposition='outside')
+            fig.add_hline(y=8, line_dash='dash', line_color='#e3b341', opacity=0.6, annotation_text='8h')
+            st.plotly_chart(dark_layout(fig, 360, legend=False), use_container_width=True)
+
+        # 1d — Swaps & Activate/Deactivate
+        s1, s2 = st.columns(2)
+        with s1:
+            st.markdown('<div class="section-title">Battery Swaps per Agent</div>', unsafe_allow_html=True)
+            sw = d1.groupby('User Name')['Swaps'].sum().reset_index()
+            sw = sw[sw['Swaps']>0].sort_values('Swaps',ascending=False).head(20)
+            if len(sw):
+                sw['name'] = sw['User Name'].apply(lambda n: ' '.join(str(n).split()[:2]))
+                fig = px.bar(sw, x='name', y='Swaps', text='Swaps',
+                    color='Swaps', color_continuous_scale=['#58a6ff','#1f6feb'])
+                fig.update_traces(textposition='outside')
+                st.plotly_chart(dark_layout(fig, 360, legend=False), use_container_width=True)
+        with s2:
+            st.markdown('<div class="section-title">Activate / Deactivate per Agent</div>', unsafe_allow_html=True)
+            if 'Activated' in d1.columns and 'Deactivated' in d1.columns:
+                ad = d1.groupby('User Name')[['Activated','Deactivated']].sum().reset_index()
+                ad = ad[(ad['Activated']>0)|(ad['Deactivated']>0)].sort_values('Activated',ascending=False).head(20)
+                if len(ad):
+                    ad['name'] = ad['User Name'].apply(lambda n: ' '.join(str(n).split()[:2]))
+                    ad_m = ad.melt(id_vars='name', value_vars=['Activated','Deactivated'], var_name='Type', value_name='Count')
+                    fig = px.bar(ad_m, x='name', y='Count', color='Type', barmode='group',
+                        color_discrete_map={'Activated':'#3fb950','Deactivated':'#f85149'},
+                        text='Count')
+                    fig.update_traces(textposition='outside')
+                    st.plotly_chart(dark_layout(fig, 360), use_container_width=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 2 — OPS TASKS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab2:
+    tasks_df = tasks_raw.copy()
+    tasks_df['date'] = pd.to_datetime(tasks_df['Created At'], errors='coerce').dt.date
+
+    f2c1, f2c2, f2c3, f2c4 = st.columns(4)
+    with f2c1:
+        t2_dates = sorted(tasks_df['date'].dropna().unique())
+        t2_fmt   = {d.strftime('%d %b %Y'): d for d in t2_dates}
+        t2_day   = st.multiselect("📅 Day", list(t2_fmt.keys()), default=[], key='t2_day')
+    with f2c2:
+        t2_areas = sorted(tasks_df['Area'].dropna().unique().tolist())
+        t2_area  = st.multiselect("🗺️ Area", t2_areas, default=[], key='t2_area')
+    with f2c3:
+        t2_statuses = sorted(tasks_df['Status'].dropna().unique().tolist())
+        t2_status   = st.multiselect("📊 Status", t2_statuses, default=[], key='t2_status')
+    with f2c4:
+        t2_agents_list = sorted(tasks_df['User Name'].dropna().unique().tolist())
+        t2_agent       = st.multiselect("👤 Agent", t2_agents_list, default=[], key='t2_agent')
+
+    if t2_day:    tasks_df = tasks_df[tasks_df['date'].isin([t2_fmt[s] for s in t2_day if s in t2_fmt])]
+    if t2_area:   tasks_df = tasks_df[tasks_df['Area'].isin(t2_area)]
+    if t2_status: tasks_df = tasks_df[tasks_df['Status'].isin(t2_status)]
+    if t2_agent:  tasks_df = tasks_df[tasks_df['User Name'].isin(t2_agent)]
+
+    if len(tasks_df) == 0:
+        st.info("No data for selected filters.")
+    else:
+        # KPIs
+        k1,k2,k3,k4,k5 = st.columns(5)
+        k1.metric("Total Tasks",   len(tasks_df))
+        k2.metric("Success",       int((tasks_df['Status']=='Success').sum()))
+        k3.metric("Failed",        int((tasks_df['Status']=='Failed').sum()))
+        k4.metric("Closed",        int((tasks_df['Status']=='closed').sum()))
+        k5.metric("Avg Duration",  f"{tasks_df['Total Duration (minutes)'].dropna().mean():.0f} min" if tasks_df['Total Duration (minutes)'].notna().any() else "—")
+        st.markdown("---")
+
+        t2a, t2b = st.columns(2)
+        with t2a:
+            # Tasks by date
+            st.markdown('<div class="section-title">Tasks by Date</div>', unsafe_allow_html=True)
+            by_date = tasks_df.groupby(['date','Status']).size().reset_index(name='count')
+            by_date['date_fmt'] = pd.to_datetime(by_date['date']).dt.strftime('%d %b')
+            if len(by_date):
+                fig = px.bar(by_date, x='date_fmt', y='count', color='Status', barmode='stack',
+                    color_discrete_map=status_colors, text_auto=True)
+                fig.update_traces(textposition='inside')
+                st.plotly_chart(dark_layout(fig, 380, xangle=0), use_container_width=True)
+        with t2b:
+            # Tasks by area
+            st.markdown('<div class="section-title">Tasks by Area</div>', unsafe_allow_html=True)
+            by_area = tasks_df.groupby(['Area','Status']).size().reset_index(name='count')
+            if len(by_area):
+                fig = px.bar(by_area, x='Area', y='count', color='Status', barmode='stack',
+                    color_discrete_map=status_colors, text_auto=True)
+                fig.update_traces(textposition='inside')
+                st.plotly_chart(dark_layout(fig, 380, xangle=0), use_container_width=True)
+
+        t2c, t2d = st.columns(2)
+        with t2c:
+            # Top agents by task count
+            st.markdown('<div class="section-title">Tasks by Agent</div>', unsafe_allow_html=True)
+            by_agent = tasks_df.groupby(['User Name','Status']).size().reset_index(name='count')
+            totals   = by_agent.groupby('User Name')['count'].sum().nlargest(25).index
+            by_agent = by_agent[by_agent['User Name'].isin(totals)]
+            by_agent['label'] = by_agent['User Name'].apply(lambda n: ' '.join(str(n).split()[:2]))
+            if len(by_agent):
+                fig = px.bar(by_agent, x='label', y='count', color='Status', barmode='stack',
+                    color_discrete_map=status_colors, text_auto=True)
+                fig.update_traces(textposition='inside')
+                st.plotly_chart(dark_layout(fig, 400), use_container_width=True)
+        with t2d:
+            # Duration distribution
+            st.markdown('<div class="section-title">Task Duration Distribution (min)</div>', unsafe_allow_html=True)
+            dur = tasks_df['Total Duration (minutes)'].dropna()
+            if len(dur):
+                fig = px.histogram(dur, nbins=30, color_discrete_sequence=['#58a6ff'],
+                    labels={'value':'Duration (min)','count':'Tasks'})
+                st.plotly_chart(dark_layout(fig, 400, legend=False, xangle=0), use_container_width=True)
+
+        # Auto-failed breakdown
+        st.markdown('<div class="section-title">Auto-Failed vs Manual Failed</div>', unsafe_allow_html=True)
+        failed_df = tasks_df[tasks_df['Status']=='Failed'].copy()
+        if len(failed_df):
+            failed_df['Type'] = failed_df['Auto Failed'].apply(lambda x: 'Auto Failed' if str(x).lower() in ('true','1','yes') else 'Manual Failed')
+            af_area = failed_df.groupby(['Area','Type']).size().reset_index(name='count')
+            fig = px.bar(af_area, x='Area', y='count', color='Type', barmode='group',
+                color_discrete_map={'Auto Failed':'#f85149','Manual Failed':'#e3b341'},
+                text='count')
+            fig.update_traces(textposition='outside')
+            st.plotly_chart(dark_layout(fig, 360, xangle=0), use_container_width=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 3 — USER LOGS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab3:
+    log_df = logs_raw.copy()
+
+    f3c1, f3c2, f3c3, f3c4 = st.columns(4)
+    with f3c1:
+        t3_dates  = sorted(log_df['date'].dropna().unique())
+        t3_fmt    = {d.strftime('%d %b %Y'): d for d in t3_dates}
+        t3_day    = st.multiselect("📅 Day", list(t3_fmt.keys()), default=[], key='t3_day')
+    with f3c2:
+        t3_areas  = sorted(log_df['Area'].dropna().unique().tolist())
+        t3_area   = st.multiselect("🗺️ Area", t3_areas, default=[], key='t3_area')
+    with f3c3:
+        t3_actions_list = sorted(log_df['Action'].dropna().unique().tolist())
+        t3_action = st.multiselect("⚡ Action", t3_actions_list, default=[], key='t3_action')
+    with f3c4:
+        t3_agents_list = sorted(log_df['User Name'].dropna().unique().tolist())
+        t3_agent  = st.multiselect("👤 Agent", t3_agents_list, default=[], key='t3_agent')
+
+    if t3_day:    log_df = log_df[log_df['date'].isin([t3_fmt[s] for s in t3_day if s in t3_fmt])]
+    if t3_area:   log_df = log_df[log_df['Area'].isin(t3_area)]
+    if t3_action: log_df = log_df[log_df['Action'].isin(t3_action)]
+    if t3_agent:  log_df = log_df[log_df['User Name'].isin(t3_agent)]
+
+    if len(log_df) == 0:
+        st.info("No data for selected filters.")
+    else:
+        lk1,lk2,lk3 = st.columns(3)
+        lk1.metric("Total Events", f"{len(log_df):,}")
+        lk2.metric("Agents",       log_df['User Name'].nunique())
+        lk3.metric("Actions",      log_df['Action'].nunique())
+        st.markdown("---")
+
+        l3a, l3b = st.columns(2)
+        with l3a:
+            st.markdown('<div class="section-title">Events by Action Type</div>', unsafe_allow_html=True)
+            by_action = log_df.groupby('Action').size().reset_index(name='count').sort_values('count',ascending=True)
+            fig = px.bar(by_action, x='count', y='Action', orientation='h',
+                color='count', color_continuous_scale=['#1f6feb','#58a6ff'],
+                text='count', labels={'count':'Events','Action':''})
+            fig.update_traces(textposition='outside')
+            st.plotly_chart(dark_layout(fig, 420, legend=False, xangle=0), use_container_width=True)
+        with l3b:
+            st.markdown('<div class="section-title">Events by Date & Action</div>', unsafe_allow_html=True)
+            by_date_action = log_df.groupby(['date','Action']).size().reset_index(name='count')
+            by_date_action['date_fmt'] = pd.to_datetime(by_date_action['date']).dt.strftime('%d %b')
+            # Show top 6 actions only to avoid clutter
+            top_actions = log_df['Action'].value_counts().head(6).index.tolist()
+            by_date_action = by_date_action[by_date_action['Action'].isin(top_actions)]
+            if len(by_date_action):
+                fig = px.bar(by_date_action, x='date_fmt', y='count', color='Action', barmode='stack',
+                    text_auto=True, labels={'count':'Events','date_fmt':''})
+                fig.update_traces(textposition='inside')
+                st.plotly_chart(dark_layout(fig, 420, xangle=0), use_container_width=True)
+
+        l3c, l3d = st.columns(2)
+        with l3c:
+            st.markdown('<div class="section-title">Top Agents by Events</div>', unsafe_allow_html=True)
+            by_agent_log = log_df.groupby('User Name').size().reset_index(name='count').sort_values('count',ascending=False).head(25)
+            by_agent_log['label'] = by_agent_log['User Name'].apply(lambda n: ' '.join(str(n).split()[:2]))
+            fig = px.bar(by_agent_log, x='label', y='count',
+                color='count', color_continuous_scale=['#1f6feb','#58a6ff'],
+                text='count', labels={'label':'','count':'Events'})
+            fig.update_traces(textposition='outside')
+            st.plotly_chart(dark_layout(fig, 400, legend=False), use_container_width=True)
+        with l3d:
+            st.markdown('<div class="section-title">Events by Area</div>', unsafe_allow_html=True)
+            by_area_log = log_df.groupby(['Area','Action']).size().reset_index(name='count')
+            top_a = log_df['Action'].value_counts().head(6).index.tolist()
+            by_area_log = by_area_log[by_area_log['Action'].isin(top_a)]
+            fig = px.bar(by_area_log, x='Area', y='count', color='Action', barmode='stack',
+                text_auto=True, labels={'count':'Events','Area':''})
+            fig.update_traces(textposition='inside')
+            st.plotly_chart(dark_layout(fig, 400, xangle=0), use_container_width=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 4 — AREAS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab4:
+    f4c1, f4c2, f4c3 = st.columns(3)
+    with f4c1:
+        t4_dates  = sorted(daily['shift_date'].dropna().unique())
+        t4_fmt    = {d.strftime('%d %b %Y'): d for d in t4_dates}
+        t4_day    = st.multiselect("📅 Day", list(t4_fmt.keys()), default=[], key='t4_day')
+    with f4c2:
+        t4_areas  = sorted(daily['Area'].dropna().unique().tolist())
+        t4_area   = st.multiselect("🗺️ Area", t4_areas, default=[], key='t4_area')
+    with f4c3:
+        t4_log_actions = sorted(logs_raw['Action'].dropna().unique().tolist())
+        t4_log_action  = st.multiselect("⚡ Log Action", t4_log_actions, default=[], key='t4_log_action')
+
+    d4 = daily.copy()
+    if t4_day:  d4 = d4[d4['shift_date'].isin([t4_fmt[s] for s in t4_day if s in t4_fmt])]
+    if t4_area: d4 = d4[d4['Area'].isin(t4_area)]
+
+    log4 = logs_raw.copy()
+    if t4_day:        log4 = log4[log4['date'].isin([t4_fmt[s] for s in t4_day if s in t4_fmt])]
+    if t4_area:       log4 = log4[log4['Area'].isin(t4_area)]
+    if t4_log_action: log4 = log4[log4['Action'].isin(t4_log_action)]
+
+    tasks4 = tasks_raw.copy()
+    tasks4['date'] = pd.to_datetime(tasks4['Created At'], errors='coerce').dt.date
+    if t4_day:  tasks4 = tasks4[tasks4['date'].isin([t4_fmt[s] for s in t4_day if s in t4_fmt])]
+    if t4_area: tasks4 = tasks4[tasks4['Area'].isin(t4_area)]
+
+    if len(d4) == 0 and len(log4) == 0:
+        st.info("No data for selected filters.")
+    else:
+        a4a, a4b = st.columns(2)
+        with a4a:
+            st.markdown('<div class="section-title">Task Outcomes by Area</div>', unsafe_allow_html=True)
+            sc_avail = [c for c in ['Success','Failed','closed','Other'] if c in d4.columns]
+            area_tasks = d4.groupby('Area')[sc_avail].sum().reset_index()
+            area_tasks = area_tasks[area_tasks['Area'].notna() & (area_tasks['Area']!='')]
+            area_m = area_tasks.melt(id_vars='Area', value_vars=sc_avail, var_name='Status', value_name='count')
+            area_m = area_m[area_m['count']>0]
+            if len(area_m):
+                fig = px.bar(area_m, x='Area', y='count', color='Status', barmode='stack',
+                    color_discrete_map=status_colors, text_auto=True)
+                fig.update_traces(textposition='inside')
+                st.plotly_chart(dark_layout(fig, 380, xangle=0), use_container_width=True)
+        with a4b:
+            st.markdown('<div class="section-title">Log Events by Area</div>', unsafe_allow_html=True)
+            area_logs = log4.groupby(['Area','Action']).size().reset_index(name='count')
+            top_a4 = log4['Action'].value_counts().head(6).index.tolist()
+            area_logs = area_logs[area_logs['Action'].isin(top_a4)]
+            if len(area_logs):
+                fig = px.bar(area_logs, x='Area', y='count', color='Action', barmode='stack',
+                    text_auto=True, labels={'count':'Events'})
+                fig.update_traces(textposition='inside')
+                st.plotly_chart(dark_layout(fig, 380, xangle=0), use_container_width=True)
+
+        a4c, a4d = st.columns(2)
+        with a4c:
+            st.markdown('<div class="section-title">Agents per Area</div>', unsafe_allow_html=True)
+            agents_area = d4.groupby('Area')['User Name'].nunique().reset_index(name='Agents').sort_values('Agents',ascending=False)
+            if len(agents_area):
+                fig = px.bar(agents_area, x='Area', y='Agents', text='Agents',
+                    color='Agents', color_continuous_scale=['#1f6feb','#58a6ff'])
+                fig.update_traces(textposition='outside')
+                st.plotly_chart(dark_layout(fig, 360, legend=False, xangle=0), use_container_width=True)
+        with a4d:
+            st.markdown('<div class="section-title">Task Outcomes by Area & Date</div>', unsafe_allow_html=True)
+            area_date = tasks4.groupby(['Area','Status']).size().reset_index(name='count')
+            if len(area_date):
+                fig = px.bar(area_date, x='Area', y='count', color='Status', barmode='group',
+                    color_discrete_map=status_colors, text='count')
+                fig.update_traces(textposition='outside')
+                st.plotly_chart(dark_layout(fig, 360, xangle=0), use_container_width=True)
+
+        # Area trend over time
+        st.markdown('<div class="section-title">Daily Task Volume by Area</div>', unsafe_allow_html=True)
+        area_trend = tasks4.groupby(['date','Area']).size().reset_index(name='count')
+        area_trend['date_fmt'] = pd.to_datetime(area_trend['date']).dt.strftime('%d %b')
+        if len(area_trend):
+            fig = px.line(area_trend, x='date_fmt', y='count', color='Area',
+                markers=True, labels={'count':'Tasks','date_fmt':''})
+            st.plotly_chart(dark_layout(fig, 360, xangle=0), use_container_width=True)
