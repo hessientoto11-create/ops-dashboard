@@ -121,49 +121,81 @@ def load_and_build(logs_bytes, tasks_bytes):
     ci = logs[logs['Action'] == 'OPS_USER_CHECKIN'][['User Name','ts']].sort_values(['User Name','ts'])
     co = logs[logs['Action'] == 'OPS_USER_CHECKOUT'][['User Name','ts']].sort_values(['User Name','ts'])
 
-    # Pair each checkin with the first checkout that is >= 6h after it
-    # and comes before the next checkin. If no valid checkout exists → Missed.
-    MIN_SHIFT_HOURS = 6
+    # shift_date: checkins 00:00-05:59 belong to the previous calendar day
+    # (night-shift agents cross midnight — their shift started the evening before)
+    def shift_date_for(ts):
+        return (ts - pd.Timedelta(days=1)).date() if ts.hour < 6 else ts.date()
+
+    # Pair checkins and checkouts purely chronologically per agent:
+    # - Walk all CI/CO events in time order
+    # - Each CI opens a pending session
+    # - The next CO closes it
+    # - If another CI arrives before any CO → previous session checkout = Missed
+    # - CO with no pending CI → orphan (ignored)
     sessions = []
     for agent in ci['User Name'].unique():
         a_ci = ci[ci['User Name'] == agent]['ts'].sort_values().tolist()
         a_co = co[co['User Name'] == agent]['ts'].sort_values().tolist()
-        used_checkouts = set()
-        for i, cin in enumerate(a_ci):
-            next_cin = a_ci[i+1] if i+1 < len(a_ci) else None
-            cout = None
-            for j, co_ts in enumerate(a_co):
-                if j in used_checkouts: continue
-                hours_after = (co_ts - cin).total_seconds() / 3600
-                if hours_after >= MIN_SHIFT_HOURS:
-                    if next_cin is None or co_ts <= next_cin:
-                        cout = co_ts
-                        used_checkouts.add(j)
-                        break
-            sessions.append({'User Name': agent, 'checkin': cin, 'checkout': cout, 'shift_date': cin.date()})
+        events = sorted([(t, 'CI') for t in a_ci] + [(t, 'CO') for t in a_co], key=lambda x: x[0])
+        pending_cin = None
+        for ts, typ in events:
+            if typ == 'CI':
+                if pending_cin is not None:
+                    # New checkin before checkout → previous shift missed checkout
+                    sessions.append({'User Name': agent, 'checkin': pending_cin, 'checkout': None,
+                                     'shift_date': shift_date_for(pending_cin)})
+                pending_cin = ts
+            else:  # CO
+                if pending_cin is not None:
+                    sessions.append({'User Name': agent, 'checkin': pending_cin, 'checkout': ts,
+                                     'shift_date': shift_date_for(pending_cin)})
+                    pending_cin = None
+                # else: orphan checkout (no matching checkin) — ignore
+        if pending_cin is not None:
+            sessions.append({'User Name': agent, 'checkin': pending_cin, 'checkout': None,
+                             'shift_date': shift_date_for(pending_cin)})
 
     sessions_df = pd.DataFrame(sessions)
     sessions_df['shift_hours'] = ((sessions_df['checkout'] - sessions_df['checkin']).dt.total_seconds() / 3600).round(1)
 
-    session_lookup = {}
-    for _, s in sessions_df.iterrows():
-        session_lookup.setdefault(s['User Name'], []).append((s['checkin'], s['checkout'], s['shift_date']))
+    # Assign a unique session_id per session — used as the join key throughout
+    # This avoids bugs when two sessions share the same (User Name, shift_date)
+    sessions_df = sessions_df.sort_values(['User Name','checkin']).reset_index(drop=True)
+    sessions_df['session_id'] = sessions_df.index.astype(str)
 
-    def find_shift(agent, t):
+    # Build session lookup: agent → list of (checkin, checkout_cap, session_id)
+    # Missed-checkout sessions are capped at the next checkin for that agent
+    session_lookup = {}
+    session_window  = {}
+    for idx, s in sessions_df.iterrows():
+        agent = s['User Name']; cin = s['checkin']; cout = s['checkout']
+        sid   = s['session_id']
+        if pd.isna(cout):
+            nxt = sessions_df[(sessions_df['User Name'] == agent) & (sessions_df['checkin'] > cin)]
+            cout_cap = nxt.iloc[0]['checkin'] if len(nxt) > 0 else cin + pd.Timedelta(hours=24)
+        else:
+            cout_cap = cout
+        session_lookup.setdefault(agent, []).append((cin, cout_cap, sid))
+        session_window[sid] = (cin, cout_cap)
+
+    def find_session(agent, t):
+        """Return session_id for timestamp t, or None if outside all windows."""
         if pd.isna(t) or agent not in session_lookup:
             return None
-        for cin, cout, sd in session_lookup[agent]:
-            if pd.isna(cout):
-                if t >= cin: return sd
-            elif cin <= t <= cout:
-                return sd
+        for cin, cout_cap, sid in session_lookup[agent]:
+            if cin <= t <= cout_cap:
+                return sid
         return None
 
-    tasks['shift_date'] = tasks.apply(lambda r: find_shift(r['User Name'], r['created_ts']), axis=1)
+    tasks['session_id'] = tasks.apply(lambda r: find_session(r['User Name'], r['created_ts']), axis=1)
+    # Keep shift_date for display, looked up from sessions_df
+    sid_to_sd = sessions_df.set_index('session_id')['shift_date'].to_dict()
+    sid_to_agent = sessions_df.set_index('session_id')['User Name'].to_dict()
+    tasks['shift_date'] = tasks['session_id'].map(sid_to_sd)
 
     swap_logs = logs[logs['Action'] == 'BATTERY_SWAP_VEHICLE'][['User Name','ts']].copy()
-    swap_logs['shift_date'] = swap_logs.apply(lambda r: find_shift(r['User Name'], r['ts']), axis=1)
-    swaps_df = swap_logs.dropna(subset=['shift_date']).groupby(['User Name','shift_date']).size().reset_index(name='Swaps')
+    swap_logs['session_id'] = swap_logs.apply(lambda r: find_session(r['User Name'], r['ts']), axis=1)
+    swaps_df = swap_logs.dropna(subset=['session_id']).groupby('session_id').size().reset_index(name='Swaps')
 
     # Activate / Deactivate — dedup: same agent + same action + same vehicle + same hour = count as 1
     act_dfs_list = []
@@ -171,45 +203,53 @@ def load_and_build(logs_bytes, tasks_bytes):
         act_logs = logs[logs['Action'] == action][['User Name','Vehicle','ts']].copy()
         act_logs['hour_bucket'] = act_logs['ts'].dt.floor('h')
         act_logs = act_logs.drop_duplicates(subset=['User Name','Vehicle','hour_bucket'])
-        act_logs['shift_date'] = act_logs.apply(lambda r: find_shift(r['User Name'], r['ts']), axis=1)
-        act_df = act_logs.dropna(subset=['shift_date']).groupby(['User Name','shift_date']).size().reset_index(name=col_name)
+        act_logs['session_id'] = act_logs.apply(lambda r: find_session(r['User Name'], r['ts']), axis=1)
+        act_df = act_logs.dropna(subset=['session_id']).groupby('session_id').size().reset_index(name=col_name)
         act_dfs_list.append(act_df)
-    act_dfs = act_dfs_list[0].merge(act_dfs_list[1], on=['User Name','shift_date'], how='outer')
+    act_dfs = act_dfs_list[0].merge(act_dfs_list[1], on='session_id', how='outer')
 
-    tasks_s    = tasks.dropna(subset=['shift_date'])
-    # Combine ALL log actions (excl checkin/checkout) + ALL task timestamps
-    # to get the true first and last action per session
-    task_ts_all = pd.concat([
-        tasks_s[['User Name','shift_date','created_ts']].rename(columns={'created_ts':'ts'}),
-        tasks_s[['User Name','shift_date','resolved_ts']].rename(columns={'resolved_ts':'ts'}),
-        tasks_s[['User Name','shift_date','failed_ts']].rename(columns={'failed_ts':'ts'}),
-        tasks_s[['User Name','shift_date','closed_ts']].rename(columns={'closed_ts':'ts'}),
-    ]).dropna(subset=['ts'])
+    tasks_s = tasks.dropna(subset=['session_id'])
 
-    # Assign shift_date to log actions too
+    # Helper: only include a timestamp if it falls inside the actual session window
+    def in_window(sid, t):
+        if sid not in session_window or pd.isna(t): return False
+        cin, cout_cap = session_window[sid]
+        return cin <= t <= cout_cap
+
+    # Task timestamps — only those within their session window
+    task_ts_rows = []
+    for _, row in tasks_s.iterrows():
+        sid = row['session_id']
+        for col in ['created_ts','resolved_ts','failed_ts','closed_ts']:
+            t = row[col]
+            if pd.notna(t) and in_window(sid, t):
+                task_ts_rows.append({'session_id': sid, 'ts': t})
+    task_ts_all = pd.DataFrame(task_ts_rows) if task_ts_rows else pd.DataFrame(columns=['session_id','ts'])
+
+    # Log actions — assigned to session by find_shift (already window-correct)
     log_action_ts = logs[~logs['Action'].isin(['OPS_USER_CHECKIN','OPS_USER_CHECKOUT'])][['User Name','ts']].copy()
-    log_action_ts['shift_date'] = log_action_ts.apply(lambda r: find_shift(r['User Name'], r['ts']), axis=1)
-    log_action_ts = log_action_ts.dropna(subset=['shift_date'])
+    log_action_ts['session_id'] = log_action_ts.apply(lambda r: find_session(r['User Name'], r['ts']), axis=1)
+    log_action_ts = log_action_ts.dropna(subset=['session_id'])
 
     all_actions_df = pd.concat([
-        task_ts_all[['User Name','shift_date','ts']],
-        log_action_ts[['User Name','shift_date','ts']]
+        task_ts_all[['session_id','ts']],
+        log_action_ts[['session_id','ts']]
     ]).dropna(subset=['ts'])
 
-    first_task = all_actions_df.groupby(['User Name','shift_date'])['ts'].min().reset_index(name='first_task_ts')
-    last_task  = all_actions_df.groupby(['User Name','shift_date'])['ts'].max().reset_index(name='last_task_ts')
+    first_task = all_actions_df.groupby('session_id')['ts'].min().reset_index(name='first_task_ts')
+    last_task  = all_actions_df.groupby('session_id')['ts'].max().reset_index(name='last_task_ts')
 
     # Dynamic status columns — works with any status values in the file
     task_counts = (
-        tasks_s.groupby(['User Name','shift_date','Status']).size()
+        tasks_s.groupby(['session_id','Status']).size()
         .reset_index(name='count')
-        .pivot_table(index=['User Name','shift_date'], columns='Status', values='count', fill_value=0)
+        .pivot_table(index='session_id', columns='Status', values='count', fill_value=0)
         .reset_index()
     )
     task_counts.columns.name = None
 
     # Detect status columns dynamically
-    fixed_cols   = ['User Name','shift_date']
+    fixed_cols   = ['session_id']
     status_cols  = [c for c in task_counts.columns if c not in fixed_cols]
     success_cols = [c for c in status_cols if str(c).lower() in ('success',)]
     failed_cols  = [c for c in status_cols if str(c).lower() in ('failed',)]
@@ -225,12 +265,12 @@ def load_and_build(logs_bytes, tasks_bytes):
 
     area_map = tasks.groupby('User Name')['Area'].agg(lambda x: x.mode()[0] if len(x) > 0 else '').reset_index()
 
-    daily = sessions_df.merge(task_counts, on=['User Name','shift_date'], how='inner')
-    daily = daily.merge(first_task, on=['User Name','shift_date'], how='left')
-    daily = daily.merge(last_task,  on=['User Name','shift_date'], how='left')
-    daily = daily.merge(swaps_df,   on=['User Name','shift_date'], how='left')
-    daily = daily.merge(act_dfs,    on=['User Name','shift_date'], how='left')
-    daily = daily.merge(area_map,   on='User Name',                how='left')
+    daily = sessions_df.merge(task_counts, on='session_id', how='inner')
+    daily = daily.merge(first_task, on='session_id', how='left')
+    daily = daily.merge(last_task,  on='session_id', how='left')
+    daily = daily.merge(swaps_df,   on='session_id', how='left')
+    daily = daily.merge(act_dfs,    on='session_id', how='left')
+    daily = daily.merge(area_map,   on='User Name',  how='left')
 
     daily['checkin_to_first_min'] = ((daily['first_task_ts'] - daily['checkin']).dt.total_seconds() / 60).round(0).astype('Int64')
     daily['last_to_checkout_min'] = ((daily['checkout'] - daily['last_task_ts']).dt.total_seconds() / 60).round(0).astype('Int64')
@@ -434,13 +474,12 @@ with col4:
 st.markdown('<div class="section-title">Task Outcomes by Date</div>', unsafe_allow_html=True)
 date_cols_avail = [c for c in ['Success','Failed','closed','Other'] if c in daily.columns]
 date_agg = daily.copy()
-date_agg['shift_date_fmt'] = pd.to_datetime(date_agg['shift_date']).dt.strftime('%d %b')
-date_agg = date_agg.groupby('shift_date_fmt')[date_cols_avail + ['Total']].sum().reset_index()
-# Sort by actual date
-date_agg['_sort'] = pd.to_datetime(date_agg['shift_date_fmt'] + ' 2026', format='%d %b %Y', errors='coerce')
-date_agg = date_agg.sort_values('_sort').drop(columns='_sort')
+date_agg['shift_date'] = pd.to_datetime(date_agg['shift_date'])
+date_agg = date_agg.groupby('shift_date')[date_cols_avail + ['Total']].sum().reset_index()
+date_agg = date_agg.sort_values('shift_date')
+date_agg['shift_date_fmt'] = date_agg['shift_date'].dt.strftime('%d %b %Y')
 
-date_melted = date_agg.melt(id_vars='shift_date_fmt', value_vars=date_cols_avail, var_name='Status', value_name='count')
+date_melted = date_agg.melt(id_vars=['shift_date','shift_date_fmt'], value_vars=date_cols_avail, var_name='Status', value_name='count')
 date_melted = date_melted[date_melted['count'] > 0]
 
 if len(date_melted) > 0:
