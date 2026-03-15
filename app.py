@@ -399,26 +399,26 @@ def dark_layout(fig, height=420, legend=True, xangle=-35):
     return fig
 
 def date_filter(key, df, date_col='shift_date'):
-    dates = sorted(df[date_col].dropna().unique())
-    fmt   = {d.strftime('%d %b %Y') if hasattr(d,'strftime') else str(d): d for d in dates}
-    sel   = st.multiselect("📅 Day", list(fmt.keys()), default=[], key=key)
-    if sel:
-        df = df[df[date_col].isin([fmt[s] for s in sel])]
-    return df
+    dates  = sorted(df[date_col].dropna().unique())
+    fmt    = {d.strftime('%d %b %Y') if hasattr(d,'strftime') else str(d): d for d in dates}
+    sel    = st.multiselect("📅 Day", list(fmt.keys()), default=[], key=key)
+    return sel, fmt   # return selection + lookup dict
 
 def agent_filter(key, df, name_col='User Name'):
     agents = sorted(df[name_col].dropna().unique().tolist())
-    sel    = st.multiselect("👤 Agent", agents, default=[], key=key)
-    if sel:
-        df = df[df[name_col].isin(sel)]
-    return df
+    return st.multiselect("👤 Agent", agents, default=[], key=key)
 
 def area_filter(key, df, area_col='Area'):
-    areas = sorted(df[area_col].dropna().unique().tolist())
-    sel   = st.multiselect("🗺️ Area", areas, default=[], key=key)
-    if sel:
-        df = df[df[area_col].isin(sel)]
-    return df
+    areas  = sorted(df[area_col].dropna().unique().tolist())
+    return st.multiselect("🗺️ Area", areas, default=[], key=key)
+
+def action_filter(key, df, action_col='Action'):
+    actions = sorted(df[action_col].dropna().unique().tolist())
+    return st.multiselect("⚡ Action", actions, default=[], key=key)
+
+def status_filter(key, df, status_col='Status'):
+    statuses = sorted(df[status_col].dropna().unique().tolist())
+    return st.multiselect("📊 Status", statuses, default=[], key=key)
 
 status_colors = {'Success':'#3fb950','Failed':'#f85149','closed':'#8b949e','Other':'#58a6ff'}
 logs_raw = pd.read_excel(io.BytesIO(st.session_state['logs_bytes']))
@@ -432,21 +432,16 @@ logs_raw['date']      = logs_raw['ts'].dt.date
 with tab1:
     f1c1, f1c2, f1c3 = st.columns(3)
     with f1c1:
-        t1_day = date_filter('t1_day', daily)
+        t1_day, t1_day_fmt = date_filter('t1_day', daily)
     with f1c2:
-        t1_area = area_filter('t1_area', daily)
+        t1_area   = area_filter('t1_area', daily)
     with f1c3:
         t1_agents = agent_filter('t1_agent', daily)
 
     d1 = daily.copy()
-    if t1_day:
-        dates_raw = sorted(daily['shift_date'].dropna().unique())
-        fmt_map   = {d.strftime('%d %b %Y'): d for d in dates_raw}
-        d1 = d1[d1['shift_date'].isin([fmt_map[s] for s in t1_day if s in fmt_map])]
-    if t1_area:
-        d1 = d1[d1['Area'].isin(t1_area)]
-    if t1_agents:
-        d1 = d1[d1['User Name'].isin(t1_agents)]
+    if t1_day:    d1 = d1[d1['shift_date'].isin([t1_day_fmt[s] for s in t1_day if s in t1_day_fmt])]
+    if t1_area:   d1 = d1[d1['Area'].isin(t1_area)]
+    if t1_agents: d1 = d1[d1['User Name'].isin(t1_agents)]
 
     if len(d1) == 0:
         st.info("No data for selected filters.")
@@ -541,20 +536,15 @@ with tab2:
 
     f2c1, f2c2, f2c3, f2c4 = st.columns(4)
     with f2c1:
-        t2_dates = sorted(tasks_df['date'].dropna().unique())
-        t2_fmt   = {d.strftime('%d %b %Y'): d for d in t2_dates}
-        t2_day   = st.multiselect("📅 Day", list(t2_fmt.keys()), default=[], key='t2_day')
+        t2_day, t2_day_fmt = date_filter('t2_day', tasks_df, date_col='date')
     with f2c2:
-        t2_areas = sorted(tasks_df['Area'].dropna().unique().tolist())
-        t2_area  = st.multiselect("🗺️ Area", t2_areas, default=[], key='t2_area')
+        t2_area   = area_filter('t2_area', tasks_df)
     with f2c3:
-        t2_statuses = sorted(tasks_df['Status'].dropna().unique().tolist())
-        t2_status   = st.multiselect("📊 Status", t2_statuses, default=[], key='t2_status')
+        t2_status = status_filter('t2_status', tasks_df)
     with f2c4:
-        t2_agents_list = sorted(tasks_df['User Name'].dropna().unique().tolist())
-        t2_agent       = st.multiselect("👤 Agent", t2_agents_list, default=[], key='t2_agent')
+        t2_agent  = agent_filter('t2_agent', tasks_df)
 
-    if t2_day:    tasks_df = tasks_df[tasks_df['date'].isin([t2_fmt[s] for s in t2_day if s in t2_fmt])]
+    if t2_day:    tasks_df = tasks_df[tasks_df['date'].isin([t2_day_fmt[s] for s in t2_day if s in t2_day_fmt])]
     if t2_area:   tasks_df = tasks_df[tasks_df['Area'].isin(t2_area)]
     if t2_status: tasks_df = tasks_df[tasks_df['Status'].isin(t2_status)]
     if t2_agent:  tasks_df = tasks_df[tasks_df['User Name'].isin(t2_agent)]
@@ -635,20 +625,15 @@ with tab3:
 
     f3c1, f3c2, f3c3, f3c4 = st.columns(4)
     with f3c1:
-        t3_dates  = sorted(log_df['date'].dropna().unique())
-        t3_fmt    = {d.strftime('%d %b %Y'): d for d in t3_dates}
-        t3_day    = st.multiselect("📅 Day", list(t3_fmt.keys()), default=[], key='t3_day')
+        t3_day, t3_day_fmt = date_filter('t3_day', log_df, date_col='date')
     with f3c2:
-        t3_areas  = sorted(log_df['Area'].dropna().unique().tolist())
-        t3_area   = st.multiselect("🗺️ Area", t3_areas, default=[], key='t3_area')
+        t3_area   = area_filter('t3_area', log_df)
     with f3c3:
-        t3_actions_list = sorted(log_df['Action'].dropna().unique().tolist())
-        t3_action = st.multiselect("⚡ Action", t3_actions_list, default=[], key='t3_action')
+        t3_action = action_filter('t3_action', log_df)
     with f3c4:
-        t3_agents_list = sorted(log_df['User Name'].dropna().unique().tolist())
-        t3_agent  = st.multiselect("👤 Agent", t3_agents_list, default=[], key='t3_agent')
+        t3_agent  = agent_filter('t3_agent', log_df)
 
-    if t3_day:    log_df = log_df[log_df['date'].isin([t3_fmt[s] for s in t3_day if s in t3_fmt])]
+    if t3_day:    log_df = log_df[log_df['date'].isin([t3_day_fmt[s] for s in t3_day if s in t3_day_fmt])]
     if t3_area:   log_df = log_df[log_df['Area'].isin(t3_area)]
     if t3_action: log_df = log_df[log_df['Action'].isin(t3_action)]
     if t3_agent:  log_df = log_df[log_df['User Name'].isin(t3_agent)]
@@ -711,28 +696,24 @@ with tab3:
 with tab4:
     f4c1, f4c2, f4c3 = st.columns(3)
     with f4c1:
-        t4_dates  = sorted(daily['shift_date'].dropna().unique())
-        t4_fmt    = {d.strftime('%d %b %Y'): d for d in t4_dates}
-        t4_day    = st.multiselect("📅 Day", list(t4_fmt.keys()), default=[], key='t4_day')
+        t4_day, t4_day_fmt = date_filter('t4_day', daily)
     with f4c2:
-        t4_areas  = sorted(daily['Area'].dropna().unique().tolist())
-        t4_area   = st.multiselect("🗺️ Area", t4_areas, default=[], key='t4_area')
+        t4_area       = area_filter('t4_area', daily)
     with f4c3:
-        t4_log_actions = sorted(logs_raw['Action'].dropna().unique().tolist())
-        t4_log_action  = st.multiselect("⚡ Log Action", t4_log_actions, default=[], key='t4_log_action')
+        t4_log_action = action_filter('t4_log_action', logs_raw)
 
     d4 = daily.copy()
-    if t4_day:  d4 = d4[d4['shift_date'].isin([t4_fmt[s] for s in t4_day if s in t4_fmt])]
+    if t4_day:  d4 = d4[d4['shift_date'].isin([t4_day_fmt[s] for s in t4_day if s in t4_day_fmt])]
     if t4_area: d4 = d4[d4['Area'].isin(t4_area)]
 
     log4 = logs_raw.copy()
-    if t4_day:        log4 = log4[log4['date'].isin([t4_fmt[s] for s in t4_day if s in t4_fmt])]
+    if t4_day:        log4 = log4[log4['date'].isin([t4_day_fmt[s] for s in t4_day if s in t4_day_fmt])]
     if t4_area:       log4 = log4[log4['Area'].isin(t4_area)]
     if t4_log_action: log4 = log4[log4['Action'].isin(t4_log_action)]
 
     tasks4 = tasks_raw.copy()
     tasks4['date'] = pd.to_datetime(tasks4['Created At'], errors='coerce').dt.date
-    if t4_day:  tasks4 = tasks4[tasks4['date'].isin([t4_fmt[s] for s in t4_day if s in t4_fmt])]
+    if t4_day:  tasks4 = tasks4[tasks4['date'].isin([t4_day_fmt[s] for s in t4_day if s in t4_day_fmt])]
     if t4_area: tasks4 = tasks4[tasks4['Area'].isin(t4_area)]
 
     if len(d4) == 0 and len(log4) == 0:
